@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
+import tempfile
 
 from typer.testing import CliRunner
 
@@ -9,6 +11,14 @@ from pto.cli import app
 from pto.holidays import get_holidays, us_holidays
 
 runner = CliRunner()
+
+
+def _write_config(data: dict[str, object]) -> str:
+    """Write a JSON config to a temp file and return its path."""
+    fd, path = tempfile.mkstemp(suffix=".json")
+    with os.fdopen(fd, "w") as f:
+        json.dump(data, f)
+    return path
 
 
 class TestOptimizeCommand:
@@ -177,3 +187,166 @@ class TestHolidayPresets:
     def test_get_holidays_us(self) -> None:
         holidays = get_holidays("us", 2025)
         assert len(holidays) == 9
+
+
+# =========================================================================
+# Multi-group CLI tests
+# =========================================================================
+
+
+class TestMultiGroupOptimize:
+    def _basic_config(self) -> dict[str, object]:
+        return {
+            "year": 2025,
+            "groups": [
+                {
+                    "name": "Alice",
+                    "pto_budget": 10,
+                    "floating_holidays": 1,
+                    "country": "us",
+                },
+                {
+                    "name": "Bob",
+                    "pto_budget": 8,
+                    "country": "us",
+                    "holidays": ["2025-11-28"],
+                },
+            ],
+        }
+
+    def test_multi_group_text_output(self) -> None:
+        path = _write_config(self._basic_config())
+        try:
+            result = runner.invoke(
+                app, ["optimize", "--config", path, "--no-calendar"]
+            )
+            assert result.exit_code == 0
+            assert "Multi-Group" in result.output
+            assert "Alice" in result.output
+            assert "Bob" in result.output
+            assert "Generated 4 vacation plan options." in result.output
+        finally:
+            os.unlink(path)
+
+    def test_multi_group_json_output(self) -> None:
+        path = _write_config(self._basic_config())
+        try:
+            result = runner.invoke(
+                app,
+                ["optimize", "--config", path, "--strategy", "bridges", "--json"],
+            )
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert data["year"] == 2025
+            assert len(data["groups"]) == 2
+            assert data["groups"][0]["name"] == "Alice"
+            assert len(data["plans"]) == 1
+            plan = data["plans"][0]
+            assert "group_allocations" in plan
+            assert len(plan["group_allocations"]) == 2
+        finally:
+            os.unlink(path)
+
+    def test_multi_group_single_strategy(self) -> None:
+        path = _write_config(self._basic_config())
+        try:
+            result = runner.invoke(
+                app,
+                ["optimize", "--config", path, "--strategy", "longest", "--no-calendar"],
+            )
+            assert result.exit_code == 0
+            assert "Generated 1 vacation plan option." in result.output
+        finally:
+            os.unlink(path)
+
+    def test_multi_group_with_calendar(self) -> None:
+        path = _write_config(self._basic_config())
+        try:
+            result = runner.invoke(
+                app,
+                ["optimize", "--config", path, "--strategy", "bridges", "--calendar"],
+            )
+            assert result.exit_code == 0
+            assert "Calendar View" in result.output
+        finally:
+            os.unlink(path)
+
+    def test_multi_group_year_override(self) -> None:
+        path = _write_config(self._basic_config())
+        try:
+            result = runner.invoke(
+                app,
+                ["optimize", "--config", path, "--year", "2026", "--strategy", "bridges", "--json"],
+            )
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert data["year"] == 2026
+        finally:
+            os.unlink(path)
+
+    def test_config_file_not_found(self) -> None:
+        result = runner.invoke(
+            app, ["optimize", "--config", "/nonexistent/config.json"]
+        )
+        assert result.exit_code == 1
+        assert "Config file not found" in result.output
+
+    def test_config_invalid_json(self) -> None:
+        fd, path = tempfile.mkstemp(suffix=".json")
+        with os.fdopen(fd, "w") as f:
+            f.write("not json{{{")
+        try:
+            result = runner.invoke(app, ["optimize", "--config", path])
+            assert result.exit_code == 1
+            assert "Invalid JSON" in result.output
+        finally:
+            os.unlink(path)
+
+    def test_config_missing_groups_key(self) -> None:
+        path = _write_config({"year": 2025})
+        try:
+            result = runner.invoke(app, ["optimize", "--config", path])
+            assert result.exit_code == 1
+            assert "groups" in result.output
+        finally:
+            os.unlink(path)
+
+    def test_config_empty_groups(self) -> None:
+        path = _write_config({"groups": []})
+        try:
+            result = runner.invoke(app, ["optimize", "--config", path])
+            assert result.exit_code == 1
+        finally:
+            os.unlink(path)
+
+    def test_config_no_country(self) -> None:
+        """Groups can omit country to have no preset holidays."""
+        cfg = {
+            "year": 2025,
+            "groups": [
+                {"name": "Solo", "pto_budget": 5, "holidays": ["2025-12-25"]},
+            ],
+        }
+        path = _write_config(cfg)
+        try:
+            result = runner.invoke(
+                app,
+                ["optimize", "--config", path, "--strategy", "bridges", "--json"],
+            )
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert data["groups"][0]["holiday_count"] == 1
+        finally:
+            os.unlink(path)
+
+    def test_budget_not_required_when_config(self) -> None:
+        """--budget is not needed when --config is provided."""
+        path = _write_config(self._basic_config())
+        try:
+            result = runner.invoke(
+                app,
+                ["optimize", "--config", path, "--strategy", "bridges", "--no-calendar"],
+            )
+            assert result.exit_code == 0
+        finally:
+            os.unlink(path)
