@@ -7,24 +7,28 @@ Uses dynamic programming to find optimal PTO placements under multiple
 strategies, producing several distinct options to choose from.
 
 Strategies:
-  1. Bridge Optimizer   – maximize total vacation days (prefers long blocks)
-  2. Longest Vacation   – maximize the single longest contiguous vacation
-  3. Extended Weekends  – many 3-4 day weekends spread across the year
-  4. Quarterly Balance  – regular breaks in every quarter
+  1. Bridge Optimizer  - maximize total vacation days (prefers long blocks)
+  2. Longest Vacation  - maximize the single longest contiguous vacation
+  3. Extended Weekends - many 3-4 day weekends spread across the year
+  4. Quarterly Balance - regular breaks in every quarter
 """
+
+from __future__ import annotations
 
 import calendar
 import datetime
-from functools import lru_cache
-from typing import Callable, NamedTuple
-
+from collections.abc import Callable
+from functools import cache
+from typing import NamedTuple
 
 # ---------------------------------------------------------------------------
 # Data types
 # ---------------------------------------------------------------------------
 
+
 class VacationBlock(NamedTuple):
     """A contiguous block of days off that includes at least one PTO day."""
+
     start_date: datetime.date
     end_date: datetime.date
     total_days: int
@@ -35,6 +39,7 @@ class VacationBlock(NamedTuple):
 
 class Plan(NamedTuple):
     """A complete vacation plan."""
+
     name: str
     description: str
     blocks: list[VacationBlock]
@@ -83,13 +88,12 @@ class PTOOptimizer:
         self.num_days = (self.end_date - self.start_date).days + 1
 
         self.dates: list[datetime.date] = [
-            self.start_date + datetime.timedelta(days=d)
-            for d in range(self.num_days)
+            self.start_date + datetime.timedelta(days=d) for d in range(self.num_days)
         ]
         self.is_weekend: list[bool] = [d.weekday() >= 5 for d in self.dates]
         self.is_holiday: list[bool] = [d in self.holidays for d in self.dates]
         self.is_natural_off: list[bool] = [
-            w or h for w, h in zip(self.is_weekend, self.is_holiday)
+            w or h for w, h in zip(self.is_weekend, self.is_holiday, strict=True)
         ]
 
     # ------------------------------------------------------------------
@@ -123,7 +127,7 @@ class PTOOptimizer:
         num_days = self.num_days
         natural_off = self.is_natural_off
 
-        @lru_cache(maxsize=None)
+        @cache
         def dp(day: int, p_rem: int, f_rem: int, streak: int) -> float:
             if day >= num_days:
                 return 0.0
@@ -286,7 +290,8 @@ class PTOOptimizer:
             "Bridge Optimizer",
             "Maximizes total vacation days by bridging gaps between "
             "weekends and holidays into long contiguous blocks.",
-            pto, flt,
+            pto,
+            flt,
         )
 
     def optimize_longest_vacation(self) -> Plan:
@@ -330,7 +335,8 @@ class PTOOptimizer:
             "Longest Single Vacation",
             "Concentrates PTO to create the single longest possible vacation "
             "block, with remaining days used for bridges elsewhere.",
-            pto, flt,
+            pto,
+            flt,
         )
 
     def optimize_extended_weekends(self) -> Plan:
@@ -339,6 +345,7 @@ class PTOOptimizer:
         Penalises streak positions > 4 to discourage long blocks, favouring
         many short getaways instead.
         """
+
         def value_fn(_d: int, s: int) -> float:
             if s <= 4:
                 return float(s)
@@ -350,7 +357,8 @@ class PTOOptimizer:
             "Extended Weekends",
             "Spreads PTO across many 3-4 day weekends throughout the year "
             "for regular short getaways.",
-            pto, flt,
+            pto,
+            flt,
         )
 
     def optimize_quarterly(self) -> Plan:
@@ -373,9 +381,7 @@ class PTOOptimizer:
         # Allocate budget: give extra days to quarters with more holidays
         quarter_holiday_counts = []
         for qs, qe in quarter_bounds:
-            count = sum(
-                1 for h in self.holidays if qs <= h <= qe
-            )
+            count = sum(1 for h in self.holidays if qs <= h <= qe)
             quarter_holiday_counts.append(count)
 
         # Sort quarters by holiday count descending for remainder allocation
@@ -406,6 +412,7 @@ class PTOOptimizer:
                     if start <= d <= end:
                         return float(s)
                     return 0.0
+
                 return vfn
 
             # Run full-year DP but only reward days in this quarter
@@ -425,7 +432,8 @@ class PTOOptimizer:
             "Quarterly Balance",
             "Distributes PTO across all four quarters for regular breaks "
             "year-round, with bridges optimised within each quarter.",
-            all_pto, all_float,
+            all_pto,
+            all_float,
         )
 
     # ------------------------------------------------------------------
@@ -452,6 +460,7 @@ class PTOOptimizer:
 # Output formatting
 # ---------------------------------------------------------------------------
 
+
 def format_plan(plan: Plan, optimizer: PTOOptimizer) -> str:
     """Return a human-readable summary of a vacation plan."""
     lines: list[str] = []
@@ -474,8 +483,7 @@ def format_plan(plan: Plan, optimizer: PTOOptimizer) -> str:
     lines.append(f"  Total vacation days: {total_vacation}")
     if total_pto > 0:
         lines.append(
-            f"  Efficiency: {total_vacation / total_pto:.1f}x "
-            f"(vacation days per PTO day)"
+            f"  Efficiency: {total_vacation / total_pto:.1f}x (vacation days per PTO day)"
         )
     lines.append("")
 
@@ -499,9 +507,7 @@ def format_plan(plan: Plan, optimizer: PTOOptimizer) -> str:
         if block.pto_days:
             parts.append(f"{block.pto_days} PTO")
         if block.holidays:
-            parts.append(
-                f"{block.holidays} holiday{'s' if block.holidays > 1 else ''}"
-            )
+            parts.append(f"{block.holidays} holiday{'s' if block.holidays > 1 else ''}")
         if block.weekend_days:
             parts.append(f"{block.weekend_days} weekend")
         lines.append(f"      {' + '.join(parts)}")
@@ -586,6 +592,7 @@ def format_calendar_view(plan: Plan, optimizer: PTOOptimizer) -> str:
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
     # =====================================================================
     #  CONFIGURATION — edit these values for your situation
@@ -596,13 +603,13 @@ def main() -> None:
 
     # 2025 US Federal Holidays (observed dates)
     holidays = [
-        datetime.date(2025, 1, 1),    # New Year's Day
-        datetime.date(2025, 1, 20),   # Martin Luther King Jr. Day
-        datetime.date(2025, 2, 17),   # Presidents' Day
-        datetime.date(2025, 5, 26),   # Memorial Day
-        datetime.date(2025, 6, 19),   # Juneteenth
-        datetime.date(2025, 7, 4),    # Independence Day
-        datetime.date(2025, 9, 1),    # Labor Day
+        datetime.date(2025, 1, 1),  # New Year's Day
+        datetime.date(2025, 1, 20),  # Martin Luther King Jr. Day
+        datetime.date(2025, 2, 17),  # Presidents' Day
+        datetime.date(2025, 5, 26),  # Memorial Day
+        datetime.date(2025, 6, 19),  # Juneteenth
+        datetime.date(2025, 7, 4),  # Independence Day
+        datetime.date(2025, 9, 1),  # Labor Day
         datetime.date(2025, 11, 27),  # Thanksgiving
         datetime.date(2025, 12, 25),  # Christmas Day
     ]
