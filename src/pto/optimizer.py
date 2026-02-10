@@ -250,8 +250,12 @@ class PTOOptimizer:
             memo: dict[tuple, float] = {}
 
             def dp_ext(
-                day: int, p_rem: int, f_rem: int, streak: int,
-                gap_cd: int, m_used: int,
+                day: int,
+                p_rem: int,
+                f_rem: int,
+                streak: int,
+                gap_cd: int,
+                m_used: int,
             ) -> float:
                 if day >= num_days:
                     return 0.0

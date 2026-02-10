@@ -102,8 +102,7 @@ def optimize(
     max_block: int | None = typer.Option(
         None,
         "--max-block-days",
-        help="Soft cap on vacation block length (days). "
-        "Diminishing returns past this length.",
+        help="Soft cap on vacation block length (days). Diminishing returns past this length.",
         min=1,
     ),
     min_gap: int = typer.Option(
