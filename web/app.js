@@ -1037,7 +1037,19 @@ function exportPDF() {
     }
   }
 
-  doc.save(`PTO-Calendar-${year}.pdf`);
+  const filename = `PTO-Calendar-${year}.pdf`;
+
+  // iOS Safari does not support programmatic downloads via <a download> clicks.
+  // Detect iOS and open the PDF in a new tab so the user can share/save it.
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  if (isIOS) {
+    const blob = doc.output("blob");
+    const url = URL.createObjectURL(blob);
+    window.open(url, "_blank");
+  } else {
+    doc.save(filename);
+  }
 }
 
 function drawMonth(doc, x, y, w, h, year, monthIdx, ptoSet, floatingSet, holidaySet, blockDates) {
