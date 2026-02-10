@@ -159,6 +159,7 @@ class TestEdgeCases:
 # Multi-Group Optimizer
 # =========================================================================
 
+
 def _us_holidays_2025_dates() -> list[datetime.date]:
     """Same list used by the single-group helper."""
     return _us_holidays_2025()

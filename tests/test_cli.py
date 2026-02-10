@@ -217,9 +217,7 @@ class TestMultiGroupOptimize:
     def test_multi_group_text_output(self) -> None:
         path = _write_config(self._basic_config())
         try:
-            result = runner.invoke(
-                app, ["optimize", "--config", path, "--no-calendar"]
-            )
+            result = runner.invoke(app, ["optimize", "--config", path, "--no-calendar"])
             assert result.exit_code == 0
             assert "Multi-Group" in result.output
             assert "Alice" in result.output
@@ -276,7 +274,16 @@ class TestMultiGroupOptimize:
         try:
             result = runner.invoke(
                 app,
-                ["optimize", "--config", path, "--year", "2026", "--strategy", "bridges", "--json"],
+                [
+                    "optimize",
+                    "--config",
+                    path,
+                    "--year",
+                    "2026",
+                    "--strategy",
+                    "bridges",
+                    "--json",
+                ],
             )
             assert result.exit_code == 0
             data = json.loads(result.output)
@@ -285,9 +292,7 @@ class TestMultiGroupOptimize:
             os.unlink(path)
 
     def test_config_file_not_found(self) -> None:
-        result = runner.invoke(
-            app, ["optimize", "--config", "/nonexistent/config.json"]
-        )
+        result = runner.invoke(app, ["optimize", "--config", "/nonexistent/config.json"])
         assert result.exit_code == 1
         assert "Config file not found" in result.output
 

@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help install lint format typecheck test test-cov docs docs-serve build clean
+.PHONY: help install lint format typecheck test test-cov docs docs-serve build clean web web-serve
 
 help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -35,6 +35,13 @@ docs-serve: ## Serve documentation locally
 build: ## Build the package
 	uv build
 
+web: ## Build the web UI (copy Python sources for Pyodide)
+	mkdir -p web/py
+	cp src/pto/__init__.py src/pto/holidays.py src/pto/optimizer.py web/py/
+
+web-serve: web ## Serve the web UI locally
+	cd web && python3 -m http.server 8080
+
 clean: ## Remove build artifacts
-	rm -rf dist/ build/ site/ .pytest_cache/ .ruff_cache/ .coverage
+	rm -rf dist/ build/ site/ web/py/ .pytest_cache/ .ruff_cache/ .coverage
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
