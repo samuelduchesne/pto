@@ -45,10 +45,32 @@ for plan in plans:
 ## CLI usage
 
 ```bash
-python -m pto
-# or
-pto
+# Optimize with US holidays (default), 15 PTO days
+pto optimize --budget 15
+
+# Specify year and floating holidays
+pto optimize --budget 15 --floating 1 --year 2025
+
+# Run a single strategy
+pto optimize --budget 10 --strategy bridges
+
+# Skip calendar view
+pto optimize --budget 15 --no-calendar
+
+# JSON output (pipe to jq, save to file, etc.)
+pto optimize --budget 15 --json
+
+# Add custom holidays on top of the US preset
+pto optimize --budget 15 --holiday 2025-03-17 --holiday 2025-11-28
+
+# No country preset — only custom holidays
+pto optimize --budget 10 --country none --holiday 2025-12-25
+
+# List holidays for a country preset
+pto holidays --year 2026
 ```
+
+Available strategies: `all` (default), `bridges`, `longest`, `weekends`, `quarterly`.
 
 ## Development
 

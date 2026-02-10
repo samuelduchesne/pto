@@ -1,5 +1,5 @@
 """Allow running ``python -m pto``."""
 
-from pto.optimizer import main
+from pto.cli import main
 
 main()
