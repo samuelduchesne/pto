@@ -47,6 +47,35 @@ class Plan(NamedTuple):
     floating_dates: list[datetime.date]
 
 
+class HolidayGroup(NamedTuple):
+    """A group with its own holiday calendar and PTO budget.
+
+    Examples: a person's company holidays, a daycare closure schedule, etc.
+    """
+
+    name: str
+    holidays: list[datetime.date]
+    pto_budget: int
+    floating_holidays: int = 0
+
+
+class GroupAllocation(NamedTuple):
+    """PTO allocation for one group within a multi-group plan."""
+
+    group_name: str
+    pto_dates: list[datetime.date]
+    floating_dates: list[datetime.date]
+
+
+class MultiGroupPlan(NamedTuple):
+    """A vacation plan optimized across multiple groups."""
+
+    name: str
+    description: str
+    blocks: list[VacationBlock]
+    group_allocations: list[GroupAllocation]
+
+
 # ---------------------------------------------------------------------------
 # Optimizer
 # ---------------------------------------------------------------------------
@@ -456,6 +485,414 @@ class PTOOptimizer:
         return plans
 
 
+class MultiGroupOptimizer:
+    """Optimizes PTO placement across multiple groups for shared vacation time.
+
+    Each group has its own holiday calendar and PTO budget.  A day counts as
+    shared vacation only when **every** group is off — either naturally (weekend
+    or that group's holiday) or by spending PTO.
+
+    The DP uses a tuple of per-group remaining budgets as state, keeping the
+    solver general for 2-4 groups with typical budgets.
+    """
+
+    def __init__(self, year: int, groups: list[HolidayGroup]):
+        if not groups:
+            raise ValueError("At least one group is required.")
+        self.year = year
+        self.groups = groups
+        self.num_groups = len(groups)
+
+        self.start_date = datetime.date(year, 1, 1)
+        self.end_date = datetime.date(year, 12, 31)
+        self.num_days = (self.end_date - self.start_date).days + 1
+
+        self.dates: list[datetime.date] = [
+            self.start_date + datetime.timedelta(days=d) for d in range(self.num_days)
+        ]
+        self.is_weekend: list[bool] = [d.weekday() >= 5 for d in self.dates]
+
+        # Per-group precomputation
+        self.group_holiday_sets: list[set[datetime.date]] = []
+        self.group_is_holiday: list[list[bool]] = []
+        self.group_is_natural_off: list[list[bool]] = []
+        self.group_budgets: list[int] = []
+
+        for g in groups:
+            hset = set(g.holidays)
+            self.group_holiday_sets.append(hset)
+            is_hol = [d in hset for d in self.dates]
+            self.group_is_holiday.append(is_hol)
+            self.group_is_natural_off.append(
+                [w or h for w, h in zip(self.is_weekend, is_hol, strict=True)]
+            )
+            self.group_budgets.append(g.pto_budget + g.floating_holidays)
+
+        # Day-level: True when *every* group is naturally off
+        self.all_natural_off: list[bool] = [
+            all(self.group_is_natural_off[g][d] for g in range(self.num_groups))
+            for d in range(self.num_days)
+        ]
+
+    # ------------------------------------------------------------------
+    # Core DP solver (multi-group)
+    # ------------------------------------------------------------------
+
+    def _solve_dp(
+        self,
+        value_fn: ValueFn,
+        budget_overrides: list[int] | None = None,
+    ) -> list[list[int]]:
+        """Find optimal shared PTO placement for all groups.
+
+        Parameters
+        ----------
+        value_fn : (day_index, streak_position) -> float
+            Incremental reward for having a shared off-day.
+        budget_overrides : list[int], optional
+            Override the per-group total budgets (PTO + floating combined).
+
+        Returns
+        -------
+        per_group_pto_days : list of list of day-indices
+            ``per_group_pto_days[g]`` contains the day indices where group *g*
+            must spend PTO (or floating holiday).
+        """
+        num_days = self.num_days
+        num_groups = self.num_groups
+        all_nat = self.all_natural_off
+        g_nat = self.group_is_natural_off
+        budgets_init = (
+            tuple(budget_overrides) if budget_overrides else tuple(self.group_budgets)
+        )
+
+        @cache
+        def dp(day: int, budgets: tuple[int, ...], streak: int) -> float:
+            if day >= num_days:
+                return 0.0
+
+            if all_nat[day]:
+                ns = streak + 1
+                return value_fn(day, ns) + dp(day + 1, budgets, ns)
+
+            # Not all naturally off — choose: work or take off
+            best = dp(day + 1, budgets, 0)  # work
+
+            # Cost: each group not naturally off must spend 1
+            new_b = list(budgets)
+            can_afford = True
+            for g in range(num_groups):
+                if not g_nat[g][day]:
+                    if new_b[g] > 0:
+                        new_b[g] -= 1
+                    else:
+                        can_afford = False
+                        break
+
+            if can_afford:
+                ns = streak + 1
+                v = value_fn(day, ns) + dp(day + 1, tuple(new_b), ns)
+                if v > best:
+                    best = v
+
+            return best
+
+        # Forward pass
+        dp(0, budgets_init, 0)
+
+        # Backtrack
+        per_group: list[list[int]] = [[] for _ in range(num_groups)]
+        day, budgets_live, streak = 0, list(budgets_init), 0
+
+        while day < num_days:
+            if all_nat[day]:
+                streak += 1
+                day += 1
+                continue
+
+            work_val = dp(day + 1, tuple(budgets_live), 0)
+            best_val = work_val
+            action = "work"
+
+            new_b = list(budgets_live)
+            can_afford = True
+            for g in range(num_groups):
+                if not g_nat[g][day]:
+                    if new_b[g] > 0:
+                        new_b[g] -= 1
+                    else:
+                        can_afford = False
+                        break
+
+            if can_afford:
+                ns = streak + 1
+                v = value_fn(day, ns) + dp(day + 1, tuple(new_b), ns)
+                if v > best_val:
+                    best_val = v
+                    action = "off"
+
+            if action == "off":
+                for g in range(num_groups):
+                    if not g_nat[g][day]:
+                        per_group[g].append(day)
+                        budgets_live[g] -= 1
+                streak += 1
+            else:
+                streak = 0
+
+            day += 1
+
+        dp.cache_clear()
+        return per_group
+
+    # ------------------------------------------------------------------
+    # Block extraction (multi-group)
+    # ------------------------------------------------------------------
+
+    def _make_plan(
+        self,
+        name: str,
+        description: str,
+        per_group_pto: list[list[int]],
+    ) -> MultiGroupPlan:
+        # All days that are off for everyone
+        off_set: set[int] = set()
+        for d in range(self.num_days):
+            if self.all_natural_off[d]:
+                off_set.add(d)
+        all_pto_set: set[int] = set()
+        for g_days in per_group_pto:
+            all_pto_set.update(g_days)
+        off_set.update(all_pto_set)
+
+        blocks = self._extract_blocks(off_set, all_pto_set)
+
+        # Split per-group days into floating then PTO
+        allocations: list[GroupAllocation] = []
+        for g in range(self.num_groups):
+            indices = per_group_pto[g]
+            fl_count = self.groups[g].floating_holidays
+            float_idx = indices[:fl_count]
+            pto_idx = indices[fl_count:]
+            allocations.append(
+                GroupAllocation(
+                    group_name=self.groups[g].name,
+                    pto_dates=[self.dates[i] for i in pto_idx],
+                    floating_dates=[self.dates[i] for i in float_idx],
+                )
+            )
+
+        return MultiGroupPlan(
+            name=name,
+            description=description,
+            blocks=blocks,
+            group_allocations=allocations,
+        )
+
+    def _extract_blocks(
+        self, off_set: set[int], pto_set: set[int]
+    ) -> list[VacationBlock]:
+        if not off_set:
+            return []
+
+        sorted_off = sorted(off_set)
+        blocks: list[VacationBlock] = []
+        start = prev = sorted_off[0]
+
+        for d in sorted_off[1:]:
+            if d == prev + 1:
+                prev = d
+            else:
+                blk = self._make_block(start, prev, pto_set)
+                if blk.pto_days > 0:
+                    blocks.append(blk)
+                start = prev = d
+
+        blk = self._make_block(start, prev, pto_set)
+        if blk.pto_days > 0:
+            blocks.append(blk)
+
+        return blocks
+
+    def _make_block(
+        self, start: int, end: int, pto_set: set[int]
+    ) -> VacationBlock:
+        rng = range(start, end + 1)
+        # "Shared holidays" = days that are a holiday for ALL groups (not weekend)
+        shared_holidays = sum(
+            1
+            for d in rng
+            if not self.is_weekend[d]
+            and all(self.group_is_holiday[g][d] for g in range(self.num_groups))
+        )
+        return VacationBlock(
+            start_date=self.dates[start],
+            end_date=self.dates[end],
+            total_days=end - start + 1,
+            pto_days=sum(1 for d in rng if d in pto_set),
+            holidays=shared_holidays,
+            weekend_days=sum(1 for d in rng if self.is_weekend[d]),
+        )
+
+    # ------------------------------------------------------------------
+    # Strategies
+    # ------------------------------------------------------------------
+
+    def optimize_max_bridges(self) -> MultiGroupPlan:
+        """Maximize total shared vacation by bridging gaps."""
+        per_group = self._solve_dp(value_fn=lambda _d, s: s)
+        return self._make_plan(
+            "Bridge Optimizer (Multi-Group)",
+            "Maximizes shared vacation days by bridging gaps between "
+            "weekends and holidays across all groups.",
+            per_group,
+        )
+
+    def optimize_longest_vacation(self) -> MultiGroupPlan:
+        """Concentrate PTO to create the single longest shared vacation."""
+        # Sliding window: find longest window where the *most constrained*
+        # group can still afford it.  For each group, count the workdays
+        # that are NOT natural off for that group within the window.
+        best_start = best_end = 0
+        best_len = 0
+
+        # Per-group workday counters in the sliding window
+        g_work = [0] * self.num_groups
+        left = 0
+
+        for right in range(self.num_days):
+            for g in range(self.num_groups):
+                if not self.group_is_natural_off[g][right]:
+                    g_work[g] += 1
+
+            # Shrink until all groups can afford the window
+            while any(g_work[g] > self.group_budgets[g] for g in range(self.num_groups)):
+                for g in range(self.num_groups):
+                    if not self.group_is_natural_off[g][left]:
+                        g_work[g] -= 1
+                left += 1
+
+            if right - left + 1 > best_len:
+                best_len = right - left + 1
+                best_start = left
+                best_end = right
+
+        window = set(range(best_start, best_end + 1))
+
+        def value_fn(_d: int, s: int) -> float:
+            if _d in window:
+                return 1000 + s
+            return s
+
+        per_group = self._solve_dp(value_fn=value_fn)
+        return self._make_plan(
+            "Longest Shared Vacation",
+            "Concentrates PTO to create the single longest shared vacation "
+            "block, with remaining days used for bridges elsewhere.",
+            per_group,
+        )
+
+    def optimize_extended_weekends(self) -> MultiGroupPlan:
+        """Spread PTO across many short shared getaways."""
+
+        def value_fn(_d: int, s: int) -> float:
+            if s <= 4:
+                return float(s)
+            return s - 10.0 * (s - 4)
+
+        per_group = self._solve_dp(value_fn=value_fn)
+        return self._make_plan(
+            "Extended Weekends (Multi-Group)",
+            "Spreads PTO across many 3-4 day shared weekends throughout "
+            "the year for regular short getaways together.",
+            per_group,
+        )
+
+    def optimize_quarterly(self) -> MultiGroupPlan:
+        """Distribute shared PTO across quarters for year-round breaks."""
+        quarter_bounds = [
+            (datetime.date(self.year, 1, 1), datetime.date(self.year, 3, 31)),
+            (datetime.date(self.year, 4, 1), datetime.date(self.year, 6, 30)),
+            (datetime.date(self.year, 7, 1), datetime.date(self.year, 9, 30)),
+            (datetime.date(self.year, 10, 1), datetime.date(self.year, 12, 31)),
+        ]
+
+        # Per-group quarterly budget allocation
+        quarter_budgets: list[list[int]] = []  # [quarter][group]
+        for _qi, (_qs, _qe) in enumerate(quarter_bounds):
+            quarter_budgets.append([0] * self.num_groups)
+
+        for g in range(self.num_groups):
+            total = self.group_budgets[g]
+            base = total // 4
+            remainder = total % 4
+
+            # Count holidays per quarter to decide where to allocate extras
+            q_hol = []
+            for qs, qe in quarter_bounds:
+                count = sum(1 for h in self.groups[g].holidays if qs <= h <= qe)
+                q_hol.append(count)
+            ranked = sorted(range(4), key=lambda i: -q_hol[i])
+
+            for qi in range(4):
+                quarter_budgets[qi][g] = base
+            for i in range(remainder):
+                quarter_budgets[ranked[i]][g] += 1
+
+        all_per_group: list[list[int]] = [[] for _ in range(self.num_groups)]
+
+        for qi, (qs, qe) in enumerate(quarter_bounds):
+            q_start_idx = (qs - self.start_date).days
+            q_end_idx = (qe - self.start_date).days
+
+            budgets_for_q = quarter_budgets[qi]
+            if all(b == 0 for b in budgets_for_q):
+                continue
+
+            def make_value_fn(start: int, end: int) -> ValueFn:
+                def vfn(d: int, s: int) -> float:
+                    if start <= d <= end:
+                        return float(s)
+                    return 0.0
+                return vfn
+
+            per_group = self._solve_dp(
+                value_fn=make_value_fn(q_start_idx, q_end_idx),
+                budget_overrides=budgets_for_q,
+            )
+            for g in range(self.num_groups):
+                all_per_group[g].extend(per_group[g])
+
+        for g in range(self.num_groups):
+            all_per_group[g].sort()
+
+        return self._make_plan(
+            "Quarterly Balance (Multi-Group)",
+            "Distributes shared PTO across all four quarters for regular "
+            "breaks year-round, with bridges optimised within each quarter.",
+            all_per_group,
+        )
+
+    # ------------------------------------------------------------------
+    # Generate all plans
+    # ------------------------------------------------------------------
+
+    def generate_all_plans(self) -> list[MultiGroupPlan]:
+        strategies = [
+            ("optimize_max_bridges", self.optimize_max_bridges),
+            ("optimize_longest_vacation", self.optimize_longest_vacation),
+            ("optimize_extended_weekends", self.optimize_extended_weekends),
+            ("optimize_quarterly", self.optimize_quarterly),
+        ]
+        plans: list[MultiGroupPlan] = []
+        for name, func in strategies:
+            try:
+                plans.append(func())
+            except Exception as e:
+                print(f"  [Warning] Strategy '{name}' failed: {e}")
+        return plans
+
+
 # ---------------------------------------------------------------------------
 # Output formatting
 # ---------------------------------------------------------------------------
@@ -572,6 +1009,156 @@ def format_calendar_view(plan: Plan, optimizer: PTOOptimizer) -> str:
                 elif d in floating_set:
                     cell = f" {day_num:>2}F"
                 elif d in holiday_set:
+                    cell = f" {day_num:>2}H"
+                else:
+                    cell = f"  {day_num:>2}"
+                row += cell
+
+            if weekday == 6:
+                lines.append(row)
+                row = ""
+
+        if row.strip():
+            lines.append(row)
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def format_multi_group_plan(plan: MultiGroupPlan, optimizer: MultiGroupOptimizer) -> str:
+    """Return a human-readable summary of a multi-group vacation plan."""
+    lines: list[str] = []
+    w = 64
+
+    lines.append("")
+    lines.append("=" * w)
+    lines.append(f"  OPTION: {plan.name}")
+    lines.append(f"  {plan.description}")
+    lines.append("=" * w)
+
+    # Groups summary
+    lines.append("")
+    lines.append("  Groups:")
+    for g, grp in enumerate(optimizer.groups):
+        alloc = plan.group_allocations[g]
+        used = len(alloc.pto_dates) + len(alloc.floating_dates)
+        budget_label = f"{grp.pto_budget}"
+        if grp.floating_holidays:
+            budget_label += f" + {grp.floating_holidays} floating"
+        lines.append(f"    {grp.name}: {used} / {budget_label} PTO used")
+
+    total_vacation = sum(b.total_days for b in plan.blocks)
+    total_pto = sum(
+        len(a.pto_dates) + len(a.floating_dates) for a in plan.group_allocations
+    )
+    lines.append("")
+    lines.append(f"  Total shared vacation days: {total_vacation}")
+    lines.append(f"  Total PTO spent (all groups): {total_pto}")
+    if total_pto > 0:
+        lines.append(
+            f"  Efficiency: {total_vacation * len(optimizer.groups) / total_pto:.1f}x"
+            " (shared vacation-days per PTO day)"
+        )
+    lines.append("")
+
+    # Vacation blocks
+    lines.append("  Vacation Blocks:")
+    lines.append("  " + "-" * (w - 4))
+
+    for i, block in enumerate(plan.blocks, 1):
+        n = block.total_days
+        day_word = "day" if n == 1 else "days"
+        if block.start_date == block.end_date:
+            dr = block.start_date.strftime("%a, %b %d")
+        else:
+            dr = (
+                f"{block.start_date.strftime('%a, %b %d')} -> "
+                f"{block.end_date.strftime('%a, %b %d')}"
+            )
+        lines.append(f"  {i:>2}. {dr}  ({n} {day_word})")
+
+        parts: list[str] = []
+        if block.pto_days:
+            parts.append(f"{block.pto_days} PTO")
+        if block.holidays:
+            parts.append(f"{block.holidays} shared holiday{'s' if block.holidays > 1 else ''}")
+        if block.weekend_days:
+            parts.append(f"{block.weekend_days} weekend")
+        lines.append(f"      {' + '.join(parts)}")
+        lines.append("")
+
+    # Per-group days to request off
+    for g, alloc in enumerate(plan.group_allocations):
+        grp = optimizer.groups[g]
+        lines.append(f"  Days to request off — {grp.name}:")
+        if alloc.pto_dates:
+            for d in alloc.pto_dates:
+                lines.append(f"    -> {d.strftime('%A, %B %d, %Y')}")
+        if alloc.floating_dates:
+            lines.append("    Floating holiday(s):")
+            for d in alloc.floating_dates:
+                lines.append(f"      -> {d.strftime('%A, %B %d, %Y')}")
+        if not alloc.pto_dates and not alloc.floating_dates:
+            lines.append("    (no PTO needed)")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def format_multi_group_calendar_view(
+    plan: MultiGroupPlan, optimizer: MultiGroupOptimizer
+) -> str:
+    """Return a month-by-month calendar for a multi-group plan."""
+    year = optimizer.year
+
+    # Collect all notable dates
+    all_pto: set[datetime.date] = set()
+    all_floating: set[datetime.date] = set()
+    all_holidays: set[datetime.date] = set()
+    for alloc in plan.group_allocations:
+        all_pto.update(alloc.pto_dates)
+        all_floating.update(alloc.floating_dates)
+    for hset in optimizer.group_holiday_sets:
+        all_holidays.update(hset)
+
+    active_months: set[int] = set()
+    for d in all_pto:
+        active_months.add(d.month)
+    for d in all_floating:
+        active_months.add(d.month)
+    for d in all_holidays:
+        active_months.add(d.month)
+
+    if not active_months:
+        return ""
+
+    lines: list[str] = [
+        "",
+        f"  Calendar View {year}",
+        "  Legend: P=PTO  F=Floating  H=Holiday  (across all groups)",
+        "",
+    ]
+
+    cal = calendar.Calendar(firstweekday=0)
+
+    for month in range(1, 13):
+        if month not in active_months:
+            continue
+
+        lines.append(f"  {calendar.month_name[month]} {year}")
+        lines.append("  Mo  Tu  We  Th  Fr  Sa  Su")
+
+        row = ""
+        for day_num, weekday in cal.itermonthdays2(year, month):
+            if day_num == 0:
+                row += "    "
+            else:
+                d = datetime.date(year, month, day_num)
+                if d in all_pto:
+                    cell = f" {day_num:>2}P"
+                elif d in all_floating:
+                    cell = f" {day_num:>2}F"
+                elif d in all_holidays:
                     cell = f" {day_num:>2}H"
                 else:
                     cell = f"  {day_num:>2}"
