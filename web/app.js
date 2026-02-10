@@ -8,6 +8,8 @@ let pythonReady = false;
 let currentResults = null;
 let activePlanIndex = 0;
 const customHolidays = [];
+const pinnedDates = [];
+const blackoutDates = [];
 
 // Mode: "solo" or "group"
 let currentMode = "solo";
@@ -72,8 +74,25 @@ sys.path.insert(0, "/home/pyodide")
 
 // ---- Run optimizer in Python (solo mode) --------------------------
 
+function getHeuristicOptions() {
+  const maxBlock = document.getElementById("max-block-days").value;
+  const minGap = document.getElementById("min-gap-days").value;
+  const monthlyCap = document.getElementById("monthly-cap").value;
+  const preferSummer = document.getElementById("prefer-summer").checked;
+  return {
+    maxBlockDays: maxBlock ? parseInt(maxBlock, 10) : null,
+    minGapDays: parseInt(minGap, 10) || 0,
+    monthlyCap: monthlyCap ? parseInt(monthlyCap, 10) : null,
+    preferSummer,
+    pinnedDates: [...pinnedDates],
+    blackoutDates: [...blackoutDates],
+  };
+}
+
 function runOptimizer(year, budget, floating, country, holidays, strategy) {
   const holidaysJson = JSON.stringify(holidays);
+  const heuristics = getHeuristicOptions();
+  const heuristicsJson = JSON.stringify(heuristics);
   const code = `
 import json, datetime
 from pto.optimizer import PTOOptimizer
@@ -86,6 +105,7 @@ def _run():
     country = ${JSON.stringify(country)}
     extra = json.loads(r'${holidaysJson}')
     strategy = ${JSON.stringify(strategy)}
+    heuristics = json.loads(r'${heuristicsJson}')
 
     holidays = []
     holiday_names = {}
@@ -101,11 +121,23 @@ def _run():
 
     holidays = sorted(set(holidays))
 
+    pinned = [datetime.date.fromisoformat(d) for d in heuristics.get("pinnedDates", [])]
+    blackout = [datetime.date.fromisoformat(d) for d in heuristics.get("blackoutDates", [])]
+    seasonal_weights = None
+    if heuristics.get("preferSummer"):
+        seasonal_weights = {6: 1.5, 7: 1.5, 8: 1.5}
+
     optimizer = PTOOptimizer(
         year=year,
         pto_budget=budget,
         holidays=holidays,
         floating_holidays=floating_count,
+        pinned_dates=pinned,
+        blackout_dates=blackout,
+        max_block_days=heuristics.get("maxBlockDays"),
+        min_gap_days=heuristics.get("minGapDays", 0),
+        monthly_pto_cap=heuristics.get("monthlyCap"),
+        seasonal_weights=seasonal_weights,
     )
 
     strategy_map = {
@@ -457,6 +489,28 @@ function initForm() {
     renderCustomHolidays();
   });
 
+  // Pinned dates
+  const addPinnedBtn = document.getElementById("add-pinned-btn");
+  const pinnedInput = document.getElementById("pinned-date-input");
+  addPinnedBtn.addEventListener("click", () => {
+    const val = pinnedInput.value;
+    if (!val || pinnedDates.includes(val)) return;
+    pinnedDates.push(val);
+    pinnedInput.value = "";
+    renderChipList("pinned-dates-list", pinnedDates);
+  });
+
+  // Blackout dates
+  const addBlackoutBtn = document.getElementById("add-blackout-btn");
+  const blackoutInput = document.getElementById("blackout-date-input");
+  addBlackoutBtn.addEventListener("click", () => {
+    const val = blackoutInput.value;
+    if (!val || blackoutDates.includes(val)) return;
+    blackoutDates.push(val);
+    blackoutInput.value = "";
+    renderChipList("blackout-dates-list", blackoutDates);
+  });
+
   // Add group button
   document.getElementById("add-group-btn").addEventListener("click", () => {
     addGroup();
@@ -511,6 +565,24 @@ function initForm() {
         btnSpinner.hidden = true;
       }
     }, 50);
+  });
+}
+
+function renderChipList(containerId, arr) {
+  const container = document.getElementById(containerId);
+  container.innerHTML = arr
+    .map((d, i) => {
+      const dt = new Date(d + "T00:00:00");
+      const label = dt.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+      return `<span class="chip">${label}<button type="button" class="chip-remove" data-index="${i}">&times;</button></span>`;
+    })
+    .join("");
+
+  container.querySelectorAll(".chip-remove").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      arr.splice(parseInt(btn.dataset.index, 10), 1);
+      renderChipList(containerId, arr);
+    });
   });
 }
 

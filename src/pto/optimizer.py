@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import calendar
 import datetime
-from collections.abc import Callable
+import math
+from collections.abc import Callable, Iterable
 from functools import cache
 from typing import NamedTuple
 
@@ -106,11 +107,26 @@ class PTOOptimizer:
         pto_budget: int,
         holidays: list[datetime.date],
         floating_holidays: int = 0,
+        *,
+        pinned_dates: Iterable[datetime.date] = (),
+        blackout_dates: Iterable[datetime.date] = (),
+        max_block_days: int | None = None,
+        min_gap_days: int = 0,
+        monthly_pto_cap: int | None = None,
+        seasonal_weights: dict[int, float] | None = None,
     ):
         self.year = year
         self.pto_budget = pto_budget
         self.holidays = set(holidays)
         self.floating_holidays = floating_holidays
+
+        # Heuristic options
+        self.pinned_dates = set(pinned_dates)
+        self.blackout_dates = set(blackout_dates)
+        self.max_block_days = max_block_days
+        self.min_gap_days = min_gap_days
+        self.monthly_pto_cap = monthly_pto_cap
+        self.seasonal_weights = seasonal_weights
 
         self.start_date = datetime.date(year, 1, 1)
         self.end_date = datetime.date(year, 12, 31)
@@ -125,9 +141,36 @@ class PTOOptimizer:
             w or h for w, h in zip(self.is_weekend, self.is_holiday, strict=True)
         ]
 
+        # Pre-compute per-day lookups for heuristics
+        self._is_pinned: list[bool] = [d in self.pinned_dates for d in self.dates]
+        self._is_blackout: list[bool] = [d in self.blackout_dates for d in self.dates]
+        self._month_of: list[int] = [d.month for d in self.dates]
+
     # ------------------------------------------------------------------
     # Core DP solver
     # ------------------------------------------------------------------
+
+    def _wrap_value_fn(self, value_fn: ValueFn) -> ValueFn:
+        """Apply max-block and seasonal-weight modifiers to a value function."""
+        max_block = self.max_block_days
+        sw = self.seasonal_weights
+        month_of = self._month_of
+
+        if max_block is None and sw is None:
+            return value_fn
+
+        def wrapped(d: int, s: int) -> float:
+            v = value_fn(d, s)
+            # Diminishing returns past max_block_days — incremental value
+            # drops to near-zero so PTO is better spent on a fresh block.
+            if max_block is not None and s > max_block:
+                v = math.log1p(s - max_block) * 0.1
+            # Seasonal multiplier
+            if sw is not None:
+                v *= sw.get(month_of[d], 1.0)
+            return v
+
+        return wrapped
 
     def _solve_dp(
         self,
@@ -151,21 +194,212 @@ class PTOOptimizer:
         -------
         (pto_day_indices, floating_day_indices)
         """
+        # Apply value-function modifiers (max block cap, seasonal weights)
+        value_fn = self._wrap_value_fn(value_fn)
+
         p_budget = self.pto_budget if pto_budget is None else pto_budget
         f_budget = self.floating_holidays if float_budget is None else float_budget
         num_days = self.num_days
         natural_off = self.is_natural_off
+        is_pinned = self._is_pinned
+        is_blackout = self._is_blackout
 
+        # Heuristic flags
+        use_gap = self.min_gap_days > 0
+        min_gap = self.min_gap_days
+        use_cap = self.monthly_pto_cap is not None
+        monthly_cap = self.monthly_pto_cap or 0
+        month_of = self._month_of
+
+        # Pre-compute month boundaries for monthly-cap bookkeeping.
+        # month_start[d] = day index of the first day in d's month.
+        month_start: list[int] = []
+        if use_cap:
+            cur_m = -1
+            cur_start = 0
+            for i in range(num_days):
+                if month_of[i] != cur_m:
+                    cur_m = month_of[i]
+                    cur_start = i
+                month_start.append(cur_start)
+
+        # Build pinned set (workdays only — weekends/holidays are already off)
+        pinned_set: set[int] = set()
+        for d in range(num_days):
+            if is_pinned[d] and not natural_off[d]:
+                pinned_set.add(d)
+
+        # Reserve budget for pinned days upfront so the DP can't spend it.
+        # In the DP, pinned days are treated as free off-days (like weekends).
+        pinned_count = len(pinned_set)
+        pin_from_float = min(f_budget, pinned_count)
+        pin_from_pto = min(p_budget, pinned_count - pin_from_float)
+        p_budget -= pin_from_pto
+        f_budget -= pin_from_float
+
+        # ---- DP with optional gap / monthly-cap state ---------------------
+        # State: (day, p_rem, f_rem, streak, gap_cooldown, month_used)
+        #   gap_cooldown: workdays remaining before PTO is allowed again
+        #   month_used:   PTO days spent in the current month so far
+        #
+        # To keep the state space manageable we only add extra dimensions
+        # when the corresponding heuristic is enabled.
+
+        if use_gap or use_cap:
+            # Extended DP with extra state dimensions
+            memo: dict[tuple, float] = {}
+
+            def dp_ext(
+                day: int, p_rem: int, f_rem: int, streak: int,
+                gap_cd: int, m_used: int,
+            ) -> float:
+                if day >= num_days:
+                    return 0.0
+                key = (day, p_rem, f_rem, streak, gap_cd, m_used)
+                if key in memo:
+                    return memo[key]
+
+                # Reset month_used at month boundaries
+                if use_cap and day > 0 and month_of[day] != month_of[day - 1]:
+                    m_used = 0
+
+                # Pinned days: budget already reserved, treat like free off-day
+                if natural_off[day] or day in pinned_set:
+                    ns = streak + 1
+                    val = value_fn(day, ns) + dp_ext(day + 1, p_rem, f_rem, ns, gap_cd, m_used)
+                    memo[key] = val
+                    return val
+
+                # Workday: gap cooldown ticks down
+                new_gap = max(0, gap_cd - 1) if use_gap else 0
+
+                # Check if taking PTO is allowed
+                can_take = True
+                if is_blackout[day]:
+                    can_take = False
+                if use_gap and gap_cd > 0 and streak == 0:
+                    can_take = False  # still in cooldown
+                if use_cap and m_used >= monthly_cap:
+                    can_take = False
+
+                # Work option — gap cooldown only applies when breaking a streak
+                work_gap = new_gap if streak == 0 else (min_gap if use_gap else 0)
+                best = dp_ext(day + 1, p_rem, f_rem, 0, work_gap, m_used)
+
+                if can_take:
+                    ns = streak + 1
+                    incr = value_fn(day, ns)
+                    next_m = m_used + 1
+
+                    if p_rem > 0:
+                        v = incr + dp_ext(day + 1, p_rem - 1, f_rem, ns, 0, next_m)
+                        if v > best:
+                            best = v
+                    if f_rem > 0:
+                        v = incr + dp_ext(day + 1, p_rem, f_rem - 1, ns, 0, next_m)
+                        if v > best:
+                            best = v
+
+                memo[key] = best
+                return best
+
+            dp_ext(0, p_budget, f_budget, 0, 0, 0)
+
+            # Backtrack
+            pto_days: list[int] = []
+            float_days: list[int] = []
+            day, p_rem, f_rem, streak = 0, p_budget, f_budget, 0
+            gap_cd, m_used = 0, 0
+
+            while day < num_days:
+                if use_cap and day > 0 and month_of[day] != month_of[day - 1]:
+                    m_used = 0
+
+                # Pinned days: record as PTO/float (budget already reserved)
+                if natural_off[day]:
+                    streak += 1
+                    day += 1
+                    continue
+
+                if day in pinned_set:
+                    # Record with reserved budget (not deducting from p_rem/f_rem)
+                    if pin_from_float > 0:
+                        float_days.append(day)
+                    else:
+                        pto_days.append(day)
+                    streak += 1
+                    gap_cd = 0
+                    day += 1
+                    continue
+
+                new_gap = max(0, gap_cd - 1) if use_gap else 0
+
+                can_take = True
+                if is_blackout[day]:
+                    can_take = False
+                if use_gap and gap_cd > 0 and streak == 0:
+                    can_take = False
+                if use_cap and m_used >= monthly_cap:
+                    can_take = False
+
+                work_gap = new_gap if streak == 0 else (min_gap if use_gap else 0)
+
+                work_val = dp_ext(day + 1, p_rem, f_rem, 0, work_gap, m_used)
+                best_val = work_val
+                action = "work"
+
+                if can_take:
+                    ns = streak + 1
+                    incr = value_fn(day, ns)
+                    next_m = m_used + 1
+
+                    if p_rem > 0:
+                        v = incr + dp_ext(day + 1, p_rem - 1, f_rem, ns, 0, next_m)
+                        if v > best_val:
+                            best_val = v
+                            action = "pto"
+                    if f_rem > 0:
+                        v = incr + dp_ext(day + 1, p_rem, f_rem - 1, ns, 0, next_m)
+                        if v > best_val:
+                            best_val = v
+                            action = "float"
+
+                if action == "pto":
+                    pto_days.append(day)
+                    p_rem -= 1
+                    streak = streak + 1
+                    gap_cd = 0
+                    m_used += 1
+                elif action == "float":
+                    float_days.append(day)
+                    f_rem -= 1
+                    streak = streak + 1
+                    gap_cd = 0
+                    m_used += 1
+                else:
+                    gap_cd = work_gap if streak == 0 else (min_gap if use_gap else 0)
+                    streak = 0
+
+                day += 1
+
+            memo.clear()
+            return pto_days, float_days
+
+        # ---- Simple DP (no gap / monthly-cap — original fast path) --------
         @cache
         def dp(day: int, p_rem: int, f_rem: int, streak: int) -> float:
             if day >= num_days:
                 return 0.0
 
-            if natural_off[day]:
+            # Pinned days: budget already reserved, treat like free off-day
+            if natural_off[day] or day in pinned_set:
                 ns = streak + 1
                 return value_fn(day, ns) + dp(day + 1, p_rem, f_rem, ns)
 
-            # Workday — choose best action
+            # Blackout: only work
+            if is_blackout[day]:
+                return dp(day + 1, p_rem, f_rem, 0)
+
             best = dp(day + 1, p_rem, f_rem, 0)  # work
 
             ns = streak + 1
@@ -187,14 +421,29 @@ class PTOOptimizer:
         dp(0, p_budget, f_budget, 0)
 
         # Backtrack to recover the optimal actions
-        pto_days: list[int] = []
-        float_days: list[int] = []
+        pto_days = []
+        float_days = []
 
         day, p_rem, f_rem, streak = 0, p_budget, f_budget, 0
 
         while day < num_days:
             if natural_off[day]:
                 streak += 1
+                day += 1
+                continue
+
+            # Pinned day: record as PTO/float (budget already reserved)
+            if day in pinned_set:
+                if pin_from_float > 0:
+                    float_days.append(day)
+                else:
+                    pto_days.append(day)
+                streak += 1
+                day += 1
+                continue
+
+            if is_blackout[day]:
+                streak = 0
                 day += 1
                 continue
 
