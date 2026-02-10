@@ -390,7 +390,7 @@ class TestCombinedHeuristics:
             month_counts[d.month] += 1
         for d in plan.floating_dates:
             month_counts[d.month] += 1
-        for m, count in month_counts.items():
+        for _m, count in month_counts.items():
             assert count <= 3
 
     def test_all_strategies_work_with_heuristics(self) -> None:
