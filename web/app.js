@@ -815,6 +815,10 @@ function renderCalendar(ptoDatesArr, floatingDatesArr, blocks) {
 function exportPDF() {
   if (!currentResults) return;
 
+  if (!window.jspdf) {
+    alert("PDF library failed to load. Please check your internet connection and reload the page.");
+    return;
+  }
   const { jsPDF } = window.jspdf;
   const plan = currentResults.plans[activePlanIndex];
   if (!plan) return;
