@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PTO Vacation Optimizer</title>
+  <meta name="description" content="Maximize your time off by strategically placing PTO days to bridge weekends and holidays into longer vacation blocks.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🏖️</text></svg>">
+</head>
+<body>
+  <!-- Loading overlay for Pyodide -->
+  <div id="pyodide-loader" class="loader-overlay">
+    <div class="loader-content">
+      <div class="loader-spinner"></div>
+      <h2>Loading PTO Optimizer</h2>
+      <p id="loader-status">Initializing Python runtime&hellip;</p>
+    </div>
+  </div>
+
+  <header class="site-header">
+    <div class="container">
+      <div class="header-inner">
+        <div class="brand">
+          <span class="brand-icon">🏖️</span>
+          <div>
+            <h1>PTO Optimizer</h1>
+            <p class="tagline">Maximize your time off</p>
+          </div>
+        </div>
+        <a href="https://github.com/samuelduchesne/pto" class="github-link" target="_blank" rel="noopener">
+          <svg width="20" height="20" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          GitHub
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- Configuration Panel -->
+    <section class="config-section">
+      <form id="optimizer-form" class="config-form">
+        <div class="form-grid">
+          <div class="form-group">
+            <label for="year">Year</label>
+            <input type="number" id="year" min="2024" max="2030" required>
+          </div>
+          <div class="form-group">
+            <label for="budget">PTO Days</label>
+            <input type="number" id="budget" min="0" max="60" value="15" required>
+          </div>
+          <div class="form-group">
+            <label for="floating">Floating Holidays</label>
+            <input type="number" id="floating" min="0" max="20" value="0">
+          </div>
+          <div class="form-group">
+            <label for="country">Holiday Preset</label>
+            <select id="country">
+              <option value="us" selected>United States</option>
+              <option value="none">None</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-group custom-holidays-group">
+          <label>Custom Holidays <span class="label-hint">(optional)</span></label>
+          <div class="custom-holidays-input">
+            <input type="date" id="custom-holiday-input" class="date-input">
+            <button type="button" id="add-holiday-btn" class="btn btn-secondary btn-sm">Add</button>
+          </div>
+          <div id="custom-holidays-list" class="chip-list"></div>
+        </div>
+
+        <div class="form-group">
+          <label>Strategy</label>
+          <div class="strategy-grid">
+            <label class="strategy-card selected" data-strategy="all">
+              <input type="radio" name="strategy" value="all" checked>
+              <span class="strategy-icon">✨</span>
+              <span class="strategy-name">All Strategies</span>
+              <span class="strategy-desc">Compare all four approaches</span>
+            </label>
+            <label class="strategy-card" data-strategy="bridges">
+              <input type="radio" name="strategy" value="bridges">
+              <span class="strategy-icon">🌉</span>
+              <span class="strategy-name">Bridge Optimizer</span>
+              <span class="strategy-desc">Maximize total days off</span>
+            </label>
+            <label class="strategy-card" data-strategy="longest">
+              <input type="radio" name="strategy" value="longest">
+              <span class="strategy-icon">🏝️</span>
+              <span class="strategy-name">Longest Vacation</span>
+              <span class="strategy-desc">One epic trip</span>
+            </label>
+            <label class="strategy-card" data-strategy="weekends">
+              <input type="radio" name="strategy" value="weekends">
+              <span class="strategy-icon">🗓️</span>
+              <span class="strategy-name">Extended Weekends</span>
+              <span class="strategy-desc">Frequent 3-4 day breaks</span>
+            </label>
+            <label class="strategy-card" data-strategy="quarterly">
+              <input type="radio" name="strategy" value="quarterly">
+              <span class="strategy-icon">⚖️</span>
+              <span class="strategy-name">Quarterly Balance</span>
+              <span class="strategy-desc">Even breaks year-round</span>
+            </label>
+          </div>
+        </div>
+
+        <button type="submit" id="optimize-btn" class="btn btn-primary btn-lg">
+          <span class="btn-text">Optimize My PTO</span>
+          <span class="btn-spinner" hidden></span>
+        </button>
+      </form>
+    </section>
+
+    <!-- Results Section -->
+    <section id="results-section" class="results-section" hidden>
+      <div id="results-summary" class="results-summary"></div>
+
+      <!-- Plan tabs -->
+      <div id="plan-tabs" class="plan-tabs"></div>
+
+      <!-- Active plan content -->
+      <div id="plan-content" class="plan-content"></div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>
+        Built with
+        <a href="https://github.com/samuelduchesne/pto" target="_blank" rel="noopener">pto</a>
+        &mdash; runs entirely in your browser via
+        <a href="https://pyodide.org" target="_blank" rel="noopener">Pyodide</a>.
+        No data leaves your device.
+      </p>
+    </div>
+  </footer>
+
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.27.5/full/pyodide.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

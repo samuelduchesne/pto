@@ -562,9 +562,7 @@ class MultiGroupOptimizer:
         num_groups = self.num_groups
         all_nat = self.all_natural_off
         g_nat = self.group_is_natural_off
-        budgets_init = (
-            tuple(budget_overrides) if budget_overrides else tuple(self.group_budgets)
-        )
+        budgets_init = tuple(budget_overrides) if budget_overrides else tuple(self.group_budgets)
 
         @cache
         def dp(day: int, budgets: tuple[int, ...], streak: int) -> float:
@@ -689,9 +687,7 @@ class MultiGroupOptimizer:
             group_allocations=allocations,
         )
 
-    def _extract_blocks(
-        self, off_set: set[int], pto_set: set[int]
-    ) -> list[VacationBlock]:
+    def _extract_blocks(self, off_set: set[int], pto_set: set[int]) -> list[VacationBlock]:
         if not off_set:
             return []
 
@@ -714,9 +710,7 @@ class MultiGroupOptimizer:
 
         return blocks
 
-    def _make_block(
-        self, start: int, end: int, pto_set: set[int]
-    ) -> VacationBlock:
+    def _make_block(self, start: int, end: int, pto_set: set[int]) -> VacationBlock:
         rng = range(start, end + 1)
         # "Shared holidays" = days that are a holiday for ALL groups (not weekend)
         shared_holidays = sum(
@@ -854,6 +848,7 @@ class MultiGroupOptimizer:
                     if start <= d <= end:
                         return float(s)
                     return 0.0
+
                 return vfn
 
             per_group = self._solve_dp(
@@ -1048,9 +1043,7 @@ def format_multi_group_plan(plan: MultiGroupPlan, optimizer: MultiGroupOptimizer
         lines.append(f"    {grp.name}: {used} / {budget_label} PTO used")
 
     total_vacation = sum(b.total_days for b in plan.blocks)
-    total_pto = sum(
-        len(a.pto_dates) + len(a.floating_dates) for a in plan.group_allocations
-    )
+    total_pto = sum(len(a.pto_dates) + len(a.floating_dates) for a in plan.group_allocations)
     lines.append("")
     lines.append(f"  Total shared vacation days: {total_vacation}")
     lines.append(f"  Total PTO spent (all groups): {total_pto}")
@@ -1105,9 +1098,7 @@ def format_multi_group_plan(plan: MultiGroupPlan, optimizer: MultiGroupOptimizer
     return "\n".join(lines)
 
 
-def format_multi_group_calendar_view(
-    plan: MultiGroupPlan, optimizer: MultiGroupOptimizer
-) -> str:
+def format_multi_group_calendar_view(plan: MultiGroupPlan, optimizer: MultiGroupOptimizer) -> str:
     """Return a month-by-month calendar for a multi-group plan."""
     year = optimizer.year
 

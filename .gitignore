@@ -19,6 +19,9 @@ htmlcov/
 # mkdocs
 site/
 
+# Web UI build artifacts (copied at build time)
+web/py/
+
 # IDE
 .idea/
 .vscode/

@@ -330,7 +330,9 @@ def _run_multi_group(
         raise typer.Exit(code=1)
 
     data = _load_config(config_path)
-    resolved_year = year_override if year_override is not None else int(data.get("year", _current_year()))  # type: ignore[arg-type]
+    resolved_year = (
+        year_override if year_override is not None else int(data.get("year", _current_year()))  # type: ignore[arg-type]
+    )
 
     groups = _build_groups(data, resolved_year)
     optimizer = MultiGroupOptimizer(year=resolved_year, groups=groups)
@@ -342,11 +344,7 @@ def _run_multi_group(
         "quarterly": optimizer.optimize_quarterly,
     }
 
-    plans = (
-        optimizer.generate_all_plans()
-        if strategy == "all"
-        else [strategy_map[strategy]()]
-    )
+    plans = optimizer.generate_all_plans() if strategy == "all" else [strategy_map[strategy]()]
 
     if output_json:
         _print_multi_group_json(plans, optimizer)
@@ -385,9 +383,7 @@ def _print_multi_group_text(
     typer.echo("=" * w)
 
 
-def _print_multi_group_json(
-    plans: list[MultiGroupPlan], optimizer: MultiGroupOptimizer
-) -> None:
+def _print_multi_group_json(plans: list[MultiGroupPlan], optimizer: MultiGroupOptimizer) -> None:
     def _serialize(plan: MultiGroupPlan) -> dict[str, object]:
         return {
             "name": plan.name,
@@ -415,8 +411,7 @@ def _print_multi_group_json(
             "summary": {
                 "total_shared_vacation_days": sum(b.total_days for b in plan.blocks),
                 "total_pto_across_groups": sum(
-                    len(a.pto_dates) + len(a.floating_dates)
-                    for a in plan.group_allocations
+                    len(a.pto_dates) + len(a.floating_dates) for a in plan.group_allocations
                 ),
             },
         }
