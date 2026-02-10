@@ -1,52 +1,650 @@
-from pyomo.environ import *
+"""PTO Vacation Optimizer
+
+Maximize your time off by strategically placing PTO days to bridge
+weekends and holidays into longer vacation blocks.
+
+Uses dynamic programming to find optimal PTO placements under multiple
+strategies, producing several distinct options to choose from.
+
+Strategies:
+  1. Bridge Optimizer   – maximize total vacation days (prefers long blocks)
+  2. Longest Vacation   – maximize the single longest contiguous vacation
+  3. Extended Weekends  – many 3-4 day weekends spread across the year
+  4. Quarterly Balance  – regular breaks in every quarter
+"""
+
+import calendar
 import datetime
+from functools import lru_cache
+from typing import Callable, NamedTuple
 
-# Parameters
-total_days = 365  # Total days in a year
-PTO_days = 15  # Available PTO days
-holidays = [datetime.date(2024, 1, 1), datetime.date(2024, 7, 4), datetime.date(2024, 12, 25)]  # Example holidays
-floating_holiday_days = 1  # Number of floating holidays allowed
 
-# Create a Pyomo model
-model = ConcreteModel()
+# ---------------------------------------------------------------------------
+# Data types
+# ---------------------------------------------------------------------------
 
-# Sets
-model.DAYS = RangeSet(1, total_days)
+class VacationBlock(NamedTuple):
+    """A contiguous block of days off that includes at least one PTO day."""
+    start_date: datetime.date
+    end_date: datetime.date
+    total_days: int
+    pto_days: int
+    holidays: int
+    weekend_days: int
 
-# Parameters
-model.is_weekend = Param(model.DAYS, initialize=lambda model, d: (datetime.date(2024, 1, 1) + datetime.timedelta(days=d-1)).weekday() >= 5)
-model.is_holiday = Param(model.DAYS, initialize=lambda model, d: datetime.date(2024, 1, 1) + datetime.timedelta(days=d-1) in holidays)
 
-# Decision Variables
-model.pto = Var(model.DAYS, within=Binary)
-model.floating_holiday = Var(model.DAYS, within=Binary)
+class Plan(NamedTuple):
+    """A complete vacation plan."""
+    name: str
+    description: str
+    blocks: list[VacationBlock]
+    pto_dates: list[datetime.date]
+    floating_dates: list[datetime.date]
 
-# Constraints
-model.PTO_limit = Constraint(expr=sum(model.pto[d] for d in model.DAYS) <= PTO_days)
-model.Floating_holiday_limit = Constraint(expr=sum(model.floating_holiday[d] for d in model.DAYS) == floating_holiday_days)
-model.No_double_holiday = Constraint(model.DAYS, rule=lambda model, d: model.pto[d] + model.floating_holiday[d] <= 1)
 
-# Auxiliary variable to keep track of non-working days
-model.non_working_day = Var(model.DAYS, within=Binary)
+# ---------------------------------------------------------------------------
+# Optimizer
+# ---------------------------------------------------------------------------
 
-# # Non-working days calculation
-# def non_working_day_rule(model, d):
-#     return model.non_working_day[d] == 1 - (model.is_weekend[d] == 0 and model.is_holiday[d] == 0 and model.pto[d] == 0 and model.floating_holiday[d] == 0)
+ValueFn = Callable[[int, int], float]
+"""Signature: value_fn(day_index, streak_position) -> incremental value.
 
-# model.non_working_day_constraint = Constraint(model.DAYS, rule=non_working_day_rule)
+streak_position is 1 for the first off-day in a streak, 2 for the second, etc.
+"""
 
-# Objective: Maximize the number of consecutive non-working days
-model.objective = Objective(expr=sum(model.non_working_day[d] for d in model.DAYS), sense=maximize)
 
-# Solve the model
-solver = SolverFactory('glpk')
-result = solver.solve(model)
+class PTOOptimizer:
+    """Optimizes PTO placement to maximize vacation duration through bridging.
 
-# Display results
-PTO_days_taken = [d for d in model.DAYS if model.pto[d].value == 1]
-floating_holiday_taken = [d for d in model.DAYS if model.floating_holiday[d].value == 1]
-total_non_working_days = sum(model.non_working_day[d].value for d in model.DAYS)
+    The core idea: weekends and holidays are already days off. By placing PTO
+    days in the short gaps between them you *bridge* separate off-blocks into
+    much longer contiguous vacations.
 
-print("PTO days taken:", PTO_days_taken)
-print("Floating holiday taken:", floating_holiday_taken)
-print("Total non-working days:", total_non_working_days)
+    A consecutive-day counter tracks streak length.  Maximising
+    ``sum(streak_pos)`` yields ``L*(L+1)/2`` per block of length *L*, giving
+    a quadratic preference for fewer, longer blocks — exactly the
+    bridge-maximising behaviour we want.
+    """
+
+    def __init__(
+        self,
+        year: int,
+        pto_budget: int,
+        holidays: list[datetime.date],
+        floating_holidays: int = 0,
+    ):
+        self.year = year
+        self.pto_budget = pto_budget
+        self.holidays = set(holidays)
+        self.floating_holidays = floating_holidays
+
+        self.start_date = datetime.date(year, 1, 1)
+        self.end_date = datetime.date(year, 12, 31)
+        self.num_days = (self.end_date - self.start_date).days + 1
+
+        self.dates: list[datetime.date] = [
+            self.start_date + datetime.timedelta(days=d)
+            for d in range(self.num_days)
+        ]
+        self.is_weekend: list[bool] = [d.weekday() >= 5 for d in self.dates]
+        self.is_holiday: list[bool] = [d in self.holidays for d in self.dates]
+        self.is_natural_off: list[bool] = [
+            w or h for w, h in zip(self.is_weekend, self.is_holiday)
+        ]
+
+    # ------------------------------------------------------------------
+    # Core DP solver
+    # ------------------------------------------------------------------
+
+    def _solve_dp(
+        self,
+        value_fn: ValueFn,
+        pto_budget: int | None = None,
+        float_budget: int | None = None,
+    ) -> tuple[list[int], list[int]]:
+        """Find optimal PTO placement using dynamic programming.
+
+        Parameters
+        ----------
+        value_fn : (day_index, streak_position) -> float
+            Incremental reward for having an off-day at *streak_position*
+            within a contiguous block, on calendar day *day_index*.
+        pto_budget : int, optional
+            Override the default PTO budget.
+        float_budget : int, optional
+            Override the default floating-holiday budget.
+
+        Returns
+        -------
+        (pto_day_indices, floating_day_indices)
+        """
+        p_budget = self.pto_budget if pto_budget is None else pto_budget
+        f_budget = self.floating_holidays if float_budget is None else float_budget
+        num_days = self.num_days
+        natural_off = self.is_natural_off
+
+        @lru_cache(maxsize=None)
+        def dp(day: int, p_rem: int, f_rem: int, streak: int) -> float:
+            if day >= num_days:
+                return 0.0
+
+            if natural_off[day]:
+                ns = streak + 1
+                return value_fn(day, ns) + dp(day + 1, p_rem, f_rem, ns)
+
+            # Workday — choose best action
+            best = dp(day + 1, p_rem, f_rem, 0)  # work
+
+            ns = streak + 1
+            incr = value_fn(day, ns)
+
+            if p_rem > 0:
+                v = incr + dp(day + 1, p_rem - 1, f_rem, ns)
+                if v > best:
+                    best = v
+
+            if f_rem > 0:
+                v = incr + dp(day + 1, p_rem, f_rem - 1, ns)
+                if v > best:
+                    best = v
+
+            return best
+
+        # Forward pass — compute optimal value (populates cache)
+        dp(0, p_budget, f_budget, 0)
+
+        # Backtrack to recover the optimal actions
+        pto_days: list[int] = []
+        float_days: list[int] = []
+
+        day, p_rem, f_rem, streak = 0, p_budget, f_budget, 0
+
+        while day < num_days:
+            if natural_off[day]:
+                streak += 1
+                day += 1
+                continue
+
+            ns = streak + 1
+            incr = value_fn(day, ns)
+
+            work_val = dp(day + 1, p_rem, f_rem, 0)
+            best_val = work_val
+            action = "work"
+
+            if p_rem > 0:
+                v = incr + dp(day + 1, p_rem - 1, f_rem, ns)
+                if v > best_val:
+                    best_val = v
+                    action = "pto"
+
+            if f_rem > 0:
+                v = incr + dp(day + 1, p_rem, f_rem - 1, ns)
+                if v > best_val:
+                    best_val = v
+                    action = "float"
+
+            if action == "pto":
+                pto_days.append(day)
+                p_rem -= 1
+                streak = ns
+            elif action == "float":
+                float_days.append(day)
+                f_rem -= 1
+                streak = ns
+            else:
+                streak = 0
+
+            day += 1
+
+        dp.cache_clear()
+        return pto_days, float_days
+
+    # ------------------------------------------------------------------
+    # Block extraction
+    # ------------------------------------------------------------------
+
+    def _make_plan(
+        self,
+        name: str,
+        description: str,
+        pto_idx: list[int],
+        float_idx: list[int],
+    ) -> Plan:
+        off_set = set()
+        for d in range(self.num_days):
+            if self.is_natural_off[d] or d in set(pto_idx) or d in set(float_idx):
+                off_set.add(d)
+
+        blocks = self._extract_blocks(off_set, set(pto_idx), set(float_idx))
+
+        return Plan(
+            name=name,
+            description=description,
+            blocks=blocks,
+            pto_dates=[self.dates[i] for i in pto_idx],
+            floating_dates=[self.dates[i] for i in float_idx],
+        )
+
+    def _extract_blocks(
+        self,
+        off_set: set[int],
+        pto_set: set[int],
+        float_set: set[int],
+    ) -> list[VacationBlock]:
+        if not off_set:
+            return []
+
+        sorted_off = sorted(off_set)
+        blocks: list[VacationBlock] = []
+        start = prev = sorted_off[0]
+
+        for d in sorted_off[1:]:
+            if d == prev + 1:
+                prev = d
+            else:
+                blk = self._make_block(start, prev, pto_set, float_set)
+                if blk.pto_days > 0:
+                    blocks.append(blk)
+                start = prev = d
+
+        blk = self._make_block(start, prev, pto_set, float_set)
+        if blk.pto_days > 0:
+            blocks.append(blk)
+
+        return blocks
+
+    def _make_block(
+        self,
+        start: int,
+        end: int,
+        pto_set: set[int],
+        float_set: set[int],
+    ) -> VacationBlock:
+        rng = range(start, end + 1)
+        return VacationBlock(
+            start_date=self.dates[start],
+            end_date=self.dates[end],
+            total_days=end - start + 1,
+            pto_days=sum(1 for d in rng if d in pto_set or d in float_set),
+            holidays=sum(1 for d in rng if self.is_holiday[d]),
+            weekend_days=sum(1 for d in rng if self.is_weekend[d]),
+        )
+
+    # ------------------------------------------------------------------
+    # Strategies
+    # ------------------------------------------------------------------
+
+    def optimize_max_bridges(self) -> Plan:
+        """Maximize total vacation by bridging gaps between off-blocks.
+
+        Value per off-day = streak position  →  block of length L contributes
+        L*(L+1)/2, giving quadratic preference for longer blocks.
+        """
+        pto, flt = self._solve_dp(value_fn=lambda _d, s: s)
+        return self._make_plan(
+            "Bridge Optimizer",
+            "Maximizes total vacation days by bridging gaps between "
+            "weekends and holidays into long contiguous blocks.",
+            pto, flt,
+        )
+
+    def optimize_longest_vacation(self) -> Plan:
+        """Concentrate PTO to create the single longest contiguous vacation.
+
+        Uses a sliding window to find the longest feasible contiguous block,
+        then runs bridge DP for remaining PTO.
+        """
+        total_budget = self.pto_budget + self.floating_holidays
+
+        # Sliding window: find longest window where workdays <= budget
+        best_start = best_end = 0
+        best_len = 0
+        workdays = 0
+        left = 0
+
+        for right in range(self.num_days):
+            if not self.is_natural_off[right]:
+                workdays += 1
+            while workdays > total_budget:
+                if not self.is_natural_off[left]:
+                    workdays -= 1
+                left += 1
+            if right - left + 1 > best_len:
+                best_len = right - left + 1
+                best_start = left
+                best_end = right
+
+        # Assign PTO within the best window
+        window = set(range(best_start, best_end + 1))
+
+        # DP with a large bonus for days in the target window
+        def value_fn(_d: int, s: int) -> float:
+            if _d in window:
+                return 1000 + s  # overwhelming preference for the window
+            return s  # remaining PTO used for bridges elsewhere
+
+        pto, flt = self._solve_dp(value_fn=value_fn)
+
+        return self._make_plan(
+            "Longest Single Vacation",
+            "Concentrates PTO to create the single longest possible vacation "
+            "block, with remaining days used for bridges elsewhere.",
+            pto, flt,
+        )
+
+    def optimize_extended_weekends(self) -> Plan:
+        """Spread PTO across many 3-4 day weekends.
+
+        Penalises streak positions > 4 to discourage long blocks, favouring
+        many short getaways instead.
+        """
+        def value_fn(_d: int, s: int) -> float:
+            if s <= 4:
+                return float(s)
+            return s - 10.0 * (s - 4)  # heavy penalty past 4 days
+
+        pto, flt = self._solve_dp(value_fn=value_fn)
+
+        return self._make_plan(
+            "Extended Weekends",
+            "Spreads PTO across many 3-4 day weekends throughout the year "
+            "for regular short getaways.",
+            pto, flt,
+        )
+
+    def optimize_quarterly(self) -> Plan:
+        """Distribute PTO across quarters for year-round breaks.
+
+        Runs the bridge DP independently per quarter, then combines.
+        A small overlap at quarter boundaries handles cross-quarter bridges.
+        """
+        quarter_bounds = [
+            (datetime.date(self.year, 1, 1), datetime.date(self.year, 3, 31)),
+            (datetime.date(self.year, 4, 1), datetime.date(self.year, 6, 30)),
+            (datetime.date(self.year, 7, 1), datetime.date(self.year, 9, 30)),
+            (datetime.date(self.year, 10, 1), datetime.date(self.year, 12, 31)),
+        ]
+
+        total_budget = self.pto_budget + self.floating_holidays
+        base = total_budget // 4
+        remainder = total_budget % 4
+
+        # Allocate budget: give extra days to quarters with more holidays
+        quarter_holiday_counts = []
+        for qs, qe in quarter_bounds:
+            count = sum(
+                1 for h in self.holidays if qs <= h <= qe
+            )
+            quarter_holiday_counts.append(count)
+
+        # Sort quarters by holiday count descending for remainder allocation
+        ranked = sorted(range(4), key=lambda i: -quarter_holiday_counts[i])
+        budgets = [base] * 4
+        for i in range(remainder):
+            budgets[ranked[i]] += 1
+
+        all_pto: list[int] = []
+        all_float: list[int] = []
+
+        for qi, (qs, qe) in enumerate(quarter_bounds):
+            q_start_idx = (qs - self.start_date).days
+            q_end_idx = (qe - self.start_date).days
+
+            q_budget = budgets[qi]
+            if q_budget == 0:
+                continue
+
+            # Decide PTO vs floating split for this quarter
+            float_for_q = min(self.floating_holidays - len(all_float), q_budget)
+            pto_for_q = q_budget - max(0, float_for_q)
+            float_for_q = max(0, float_for_q)
+
+            # DP restricted to this quarter's date range
+            def make_value_fn(start: int, end: int) -> ValueFn:
+                def vfn(d: int, s: int) -> float:
+                    if start <= d <= end:
+                        return float(s)
+                    return 0.0
+                return vfn
+
+            # Run full-year DP but only reward days in this quarter
+            # (PTO placed outside the quarter yields 0 value, so it won't be)
+            pto, flt = self._solve_dp(
+                value_fn=make_value_fn(q_start_idx, q_end_idx),
+                pto_budget=pto_for_q,
+                float_budget=float_for_q,
+            )
+            all_pto.extend(pto)
+            all_float.extend(flt)
+
+        all_pto.sort()
+        all_float.sort()
+
+        return self._make_plan(
+            "Quarterly Balance",
+            "Distributes PTO across all four quarters for regular breaks "
+            "year-round, with bridges optimised within each quarter.",
+            all_pto, all_float,
+        )
+
+    # ------------------------------------------------------------------
+    # Generate all plans
+    # ------------------------------------------------------------------
+
+    def generate_all_plans(self) -> list[Plan]:
+        strategies = [
+            ("optimize_max_bridges", self.optimize_max_bridges),
+            ("optimize_longest_vacation", self.optimize_longest_vacation),
+            ("optimize_extended_weekends", self.optimize_extended_weekends),
+            ("optimize_quarterly", self.optimize_quarterly),
+        ]
+        plans: list[Plan] = []
+        for name, func in strategies:
+            try:
+                plans.append(func())
+            except Exception as e:
+                print(f"  [Warning] Strategy '{name}' failed: {e}")
+        return plans
+
+
+# ---------------------------------------------------------------------------
+# Output formatting
+# ---------------------------------------------------------------------------
+
+def format_plan(plan: Plan, optimizer: PTOOptimizer) -> str:
+    """Return a human-readable summary of a vacation plan."""
+    lines: list[str] = []
+    w = 64
+
+    lines.append("")
+    lines.append("=" * w)
+    lines.append(f"  OPTION: {plan.name}")
+    lines.append(f"  {plan.description}")
+    lines.append("=" * w)
+
+    total_vacation = sum(b.total_days for b in plan.blocks)
+    total_pto = len(plan.pto_dates) + len(plan.floating_dates)
+
+    budget_label = f"{optimizer.pto_budget}"
+    if optimizer.floating_holidays:
+        budget_label += f" + {optimizer.floating_holidays} floating"
+
+    lines.append(f"  PTO days used: {total_pto} / {budget_label}")
+    lines.append(f"  Total vacation days: {total_vacation}")
+    if total_pto > 0:
+        lines.append(
+            f"  Efficiency: {total_vacation / total_pto:.1f}x "
+            f"(vacation days per PTO day)"
+        )
+    lines.append("")
+
+    # Vacation blocks
+    lines.append("  Vacation Blocks:")
+    lines.append("  " + "-" * (w - 4))
+
+    for i, block in enumerate(plan.blocks, 1):
+        n = block.total_days
+        day_word = "day" if n == 1 else "days"
+        if block.start_date == block.end_date:
+            dr = block.start_date.strftime("%a, %b %d")
+        else:
+            dr = (
+                f"{block.start_date.strftime('%a, %b %d')} -> "
+                f"{block.end_date.strftime('%a, %b %d')}"
+            )
+        lines.append(f"  {i:>2}. {dr}  ({n} {day_word})")
+
+        parts: list[str] = []
+        if block.pto_days:
+            parts.append(f"{block.pto_days} PTO")
+        if block.holidays:
+            parts.append(
+                f"{block.holidays} holiday{'s' if block.holidays > 1 else ''}"
+            )
+        if block.weekend_days:
+            parts.append(f"{block.weekend_days} weekend")
+        lines.append(f"      {' + '.join(parts)}")
+        lines.append("")
+
+    # Days to request off
+    lines.append("  Days to request off:")
+    for d in plan.pto_dates:
+        lines.append(f"    -> {d.strftime('%A, %B %d, %Y')}")
+    if plan.floating_dates:
+        lines.append("")
+        lines.append("  Floating holiday(s):")
+        for d in plan.floating_dates:
+            lines.append(f"    -> {d.strftime('%A, %B %d, %Y')}")
+
+    return "\n".join(lines)
+
+
+def format_calendar_view(plan: Plan, optimizer: PTOOptimizer) -> str:
+    """Return a month-by-month calendar highlighting PTO and holidays."""
+    pto_set = set(plan.pto_dates)
+    floating_set = set(plan.floating_dates)
+    holiday_set = optimizer.holidays
+    year = optimizer.year
+
+    # Determine which months to show (those with PTO or holidays)
+    active_months: set[int] = set()
+    for d in plan.pto_dates:
+        active_months.add(d.month)
+    for d in plan.floating_dates:
+        active_months.add(d.month)
+    for d in holiday_set:
+        active_months.add(d.month)
+
+    if not active_months:
+        return ""
+
+    lines: list[str] = [
+        "",
+        f"  Calendar View {year}",
+        "  Legend: P=PTO  F=Floating  H=Holiday  (bold = vacation block)",
+        "",
+    ]
+
+    cal = calendar.Calendar(firstweekday=0)
+
+    for month in range(1, 13):
+        if month not in active_months:
+            continue
+
+        lines.append(f"  {calendar.month_name[month]} {year}")
+        lines.append("  Mo  Tu  We  Th  Fr  Sa  Su")
+
+        row = ""
+        for day_num, weekday in cal.itermonthdays2(year, month):
+            if day_num == 0:
+                row += "    "
+            else:
+                d = datetime.date(year, month, day_num)
+                if d in pto_set:
+                    cell = f" {day_num:>2}P"
+                elif d in floating_set:
+                    cell = f" {day_num:>2}F"
+                elif d in holiday_set:
+                    cell = f" {day_num:>2}H"
+                else:
+                    cell = f"  {day_num:>2}"
+                row += cell
+
+            if weekday == 6:
+                lines.append(row)
+                row = ""
+
+        if row.strip():
+            lines.append(row)
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    # =====================================================================
+    #  CONFIGURATION — edit these values for your situation
+    # =====================================================================
+    year = 2025
+    pto_budget = 15
+    floating_holidays = 1
+
+    # 2025 US Federal Holidays (observed dates)
+    holidays = [
+        datetime.date(2025, 1, 1),    # New Year's Day
+        datetime.date(2025, 1, 20),   # Martin Luther King Jr. Day
+        datetime.date(2025, 2, 17),   # Presidents' Day
+        datetime.date(2025, 5, 26),   # Memorial Day
+        datetime.date(2025, 6, 19),   # Juneteenth
+        datetime.date(2025, 7, 4),    # Independence Day
+        datetime.date(2025, 9, 1),    # Labor Day
+        datetime.date(2025, 11, 27),  # Thanksgiving
+        datetime.date(2025, 12, 25),  # Christmas Day
+    ]
+
+    holiday_names = {
+        (1, 1): "New Year's Day",
+        (1, 20): "Martin Luther King Jr. Day",
+        (2, 17): "Presidents' Day",
+        (5, 26): "Memorial Day",
+        (6, 19): "Juneteenth",
+        (7, 4): "Independence Day",
+        (9, 1): "Labor Day",
+        (11, 27): "Thanksgiving",
+        (12, 25): "Christmas Day",
+    }
+    # =====================================================================
+
+    w = 64
+    print("=" * w)
+    print("  PTO VACATION OPTIMIZER")
+    print("=" * w)
+    print(f"  Year:              {year}")
+    print(f"  PTO budget:        {pto_budget} days")
+    print(f"  Floating holidays: {floating_holidays}")
+    print(f"  Company holidays:  {len(holidays)}")
+    print()
+    for h in holidays:
+        name = holiday_names.get((h.month, h.day), "Holiday")
+        print(f"    {h.strftime('%a, %b %d'):>12}  {name}")
+
+    optimizer = PTOOptimizer(year, pto_budget, holidays, floating_holidays)
+    plans = optimizer.generate_all_plans()
+
+    for plan in plans:
+        print(format_plan(plan, optimizer))
+        print(format_calendar_view(plan, optimizer))
+
+    print()
+    print("=" * w)
+    print(f"  Generated {len(plans)} vacation plan options.")
+    print("=" * w)
+
+
+if __name__ == "__main__":
+    main()
