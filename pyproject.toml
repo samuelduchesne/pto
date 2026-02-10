@@ -1,14 +1,12 @@
 [tool.poetry]
 name = "pto"
 version = "0.1.0"
-description = ""
+description = "PTO vacation optimizer that maximizes time off by bridging weekends and holidays"
 authors = ["Samuel Letellier-Duchesne <samuelduchesne@me.com>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.10"
-pyomo = "^6.7.2"
-glpk = "^0.4.7"
 
 
 [build-system]
