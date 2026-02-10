@@ -156,6 +156,264 @@ class TestEdgeCases:
 
 
 # =========================================================================
+# Heuristics
+# =========================================================================
+
+
+class TestPinnedDates:
+    def test_pinned_date_appears_in_output(self) -> None:
+        pin = datetime.date(2025, 8, 15)  # A Friday
+        opt = PTOOptimizer(
+            year=2025,
+            pto_budget=10,
+            holidays=_us_holidays_2025(),
+            pinned_dates=[pin],
+        )
+        plan = opt.optimize_max_bridges()
+        all_off = set(plan.pto_dates) | set(plan.floating_dates)
+        assert pin in all_off
+
+    def test_multiple_pinned_dates(self) -> None:
+        pins = [datetime.date(2025, 3, 14), datetime.date(2025, 9, 12)]
+        opt = PTOOptimizer(
+            year=2025,
+            pto_budget=10,
+            holidays=_us_holidays_2025(),
+            pinned_dates=pins,
+        )
+        plan = opt.optimize_max_bridges()
+        all_off = set(plan.pto_dates) | set(plan.floating_dates)
+        for p in pins:
+            assert p in all_off
+
+    def test_pinned_uses_budget(self) -> None:
+        pins = [datetime.date(2025, 8, 15)]
+        opt = PTOOptimizer(
+            year=2025,
+            pto_budget=5,
+            holidays=_us_holidays_2025(),
+            pinned_dates=pins,
+        )
+        plan = opt.optimize_max_bridges()
+        total = len(plan.pto_dates) + len(plan.floating_dates)
+        assert total <= 5
+
+
+class TestBlackoutDates:
+    def test_blackout_date_excluded(self) -> None:
+        # Blackout Jan 2 and Jan 3 — the prime bridging days
+        blackouts = [datetime.date(2025, 1, 2), datetime.date(2025, 1, 3)]
+        opt = PTOOptimizer(
+            year=2025,
+            pto_budget=10,
+            holidays=_us_holidays_2025(),
+            blackout_dates=blackouts,
+        )
+        plan = opt.optimize_max_bridges()
+        all_off = set(plan.pto_dates) | set(plan.floating_dates)
+        for b in blackouts:
+            assert b not in all_off
+
+    def test_blackout_still_uses_full_budget(self) -> None:
+        blackouts = [datetime.date(2025, 1, 2)]
+        opt = PTOOptimizer(
+            year=2025,
+            pto_budget=10,
+            holidays=_us_holidays_2025(),
+            blackout_dates=blackouts,
+        )
+        plan = opt.optimize_max_bridges()
+        total = len(plan.pto_dates) + len(plan.floating_dates)
+        assert total == 10
+
+
+class TestMaxBlockDays:
+    def test_blocks_respect_soft_cap(self) -> None:
+        opt = PTOOptimizer(
+            year=2025,
+            pto_budget=15,
+            holidays=_us_holidays_2025(),
+            max_block_days=7,
+        )
+        plan = opt.optimize_max_bridges()
+        # With soft cap at 7, we should see multiple shorter blocks
+        # instead of one mega-block
+        assert len(plan.blocks) >= 2
+
+    def test_no_cap_allows_long_blocks(self) -> None:
+        opt = PTOOptimizer(
+            year=2025,
+            pto_budget=15,
+            holidays=_us_holidays_2025(),
+        )
+        plan = opt.optimize_max_bridges()
+        longest = max(b.total_days for b in plan.blocks)
+        assert longest >= 7  # unrestricted should produce long blocks
+
+    def test_uses_full_budget(self) -> None:
+        opt = PTOOptimizer(
+            year=2025,
+            pto_budget=10,
+            holidays=_us_holidays_2025(),
+            max_block_days=5,
+        )
+        plan = opt.optimize_max_bridges()
+        total = len(plan.pto_dates) + len(plan.floating_dates)
+        assert total == 10
+
+
+class TestMinGapDays:
+    def test_gap_between_blocks(self) -> None:
+        opt = PTOOptimizer(
+            year=2025,
+            pto_budget=10,
+            holidays=_us_holidays_2025(),
+            min_gap_days=5,
+        )
+        plan = opt.optimize_max_bridges()
+        # Verify at least 5 workdays between consecutive blocks
+        for i in range(len(plan.blocks) - 1):
+            end_of_block = plan.blocks[i].end_date
+            start_of_next = plan.blocks[i + 1].start_date
+            gap_days = 0
+            d = end_of_block + datetime.timedelta(days=1)
+            while d < start_of_next:
+                if d.weekday() < 5:  # workday
+                    gap_days += 1
+                d += datetime.timedelta(days=1)
+            assert gap_days >= 5, (
+                f"Gap between block ending {end_of_block} and block "
+                f"starting {start_of_next} is only {gap_days} workdays"
+            )
+
+
+class TestMonthlyCap:
+    def test_monthly_cap_limits_pto_per_month(self) -> None:
+        opt = PTOOptimizer(
+            year=2025,
+            pto_budget=15,
+            holidays=_us_holidays_2025(),
+            monthly_pto_cap=3,
+        )
+        plan = opt.optimize_max_bridges()
+        # Count PTO per month
+        from collections import Counter
+
+        month_counts: Counter[int] = Counter()
+        for d in plan.pto_dates:
+            month_counts[d.month] += 1
+        for d in plan.floating_dates:
+            month_counts[d.month] += 1
+        for m, count in month_counts.items():
+            assert count <= 3, f"Month {m} has {count} PTO days, exceeds cap of 3"
+
+    def test_monthly_cap_distributes_pto(self) -> None:
+        opt = PTOOptimizer(
+            year=2025,
+            pto_budget=12,
+            holidays=_us_holidays_2025(),
+            monthly_pto_cap=2,
+        )
+        plan = opt.optimize_max_bridges()
+        # With cap=2, 12 days should spread across at least 6 months
+        months_used = set()
+        for d in plan.pto_dates:
+            months_used.add(d.month)
+        for d in plan.floating_dates:
+            months_used.add(d.month)
+        assert len(months_used) >= 6
+
+
+class TestSeasonalWeights:
+    def test_prefer_summer_shifts_pto(self) -> None:
+        opt_default = PTOOptimizer(
+            year=2025,
+            pto_budget=10,
+            holidays=_us_holidays_2025(),
+        )
+        plan_default = opt_default.optimize_max_bridges()
+
+        opt_summer = PTOOptimizer(
+            year=2025,
+            pto_budget=10,
+            holidays=_us_holidays_2025(),
+            seasonal_weights={6: 1.5, 7: 1.5, 8: 1.5},
+        )
+        plan_summer = opt_summer.optimize_max_bridges()
+
+        def summer_days(plan):
+            count = 0
+            for d in plan.pto_dates:
+                if d.month in (6, 7, 8):
+                    count += 1
+            for d in plan.floating_dates:
+                if d.month in (6, 7, 8):
+                    count += 1
+            return count
+
+        # Summer-weighted plan should have more summer PTO
+        assert summer_days(plan_summer) >= summer_days(plan_default)
+
+
+class TestCombinedHeuristics:
+    def test_pinned_and_blackout_together(self) -> None:
+        pin = datetime.date(2025, 7, 3)
+        blackout = datetime.date(2025, 1, 2)
+        opt = PTOOptimizer(
+            year=2025,
+            pto_budget=10,
+            holidays=_us_holidays_2025(),
+            pinned_dates=[pin],
+            blackout_dates=[blackout],
+        )
+        plan = opt.optimize_max_bridges()
+        all_off = set(plan.pto_dates) | set(plan.floating_dates)
+        assert pin in all_off
+        assert blackout not in all_off
+
+    def test_max_block_and_monthly_cap(self) -> None:
+        opt = PTOOptimizer(
+            year=2025,
+            pto_budget=12,
+            holidays=_us_holidays_2025(),
+            max_block_days=5,
+            monthly_pto_cap=3,
+        )
+        plan = opt.optimize_max_bridges()
+        total = len(plan.pto_dates) + len(plan.floating_dates)
+        assert total <= 12
+        # Verify monthly cap
+        from collections import Counter
+
+        month_counts: Counter[int] = Counter()
+        for d in plan.pto_dates:
+            month_counts[d.month] += 1
+        for d in plan.floating_dates:
+            month_counts[d.month] += 1
+        for _m, count in month_counts.items():
+            assert count <= 3
+
+    def test_all_strategies_work_with_heuristics(self) -> None:
+        """All four strategies should work when heuristics are enabled."""
+        opt = PTOOptimizer(
+            year=2025,
+            pto_budget=10,
+            holidays=_us_holidays_2025(),
+            max_block_days=7,
+            min_gap_days=3,
+            monthly_pto_cap=4,
+            seasonal_weights={6: 1.5, 7: 1.5, 8: 1.5},
+            pinned_dates=[datetime.date(2025, 7, 3)],
+            blackout_dates=[datetime.date(2025, 1, 2)],
+        )
+        plans = opt.generate_all_plans()
+        assert len(plans) == 4
+        for plan in plans:
+            total = len(plan.pto_dates) + len(plan.floating_dates)
+            assert total <= 10
+
+
+# =========================================================================
 # Multi-Group Optimizer
 # =========================================================================
 

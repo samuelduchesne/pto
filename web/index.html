@@ -135,6 +135,52 @@
           </div>
         </div>
 
+        <!-- Scheduling heuristics (collapsible) -->
+        <details class="heuristics-panel">
+          <summary class="heuristics-toggle">Scheduling Heuristics <span class="label-hint">(optional)</span></summary>
+          <div class="heuristics-body">
+            <div class="form-grid">
+              <div class="form-group">
+                <label for="max-block-days">Max Block Length</label>
+                <input type="number" id="max-block-days" min="3" max="30" placeholder="No limit">
+                <span class="field-hint">Soft cap on vacation block days</span>
+              </div>
+              <div class="form-group">
+                <label for="min-gap-days">Min Gap Between Blocks</label>
+                <input type="number" id="min-gap-days" min="0" max="60" value="0">
+                <span class="field-hint">Workdays required between blocks</span>
+              </div>
+              <div class="form-group">
+                <label for="monthly-cap">Monthly PTO Cap</label>
+                <input type="number" id="monthly-cap" min="1" max="20" placeholder="No limit">
+                <span class="field-hint">Max PTO days per calendar month</span>
+              </div>
+              <div class="form-group">
+                <label>
+                  <input type="checkbox" id="prefer-summer"> Prefer Summer
+                </label>
+                <span class="field-hint">Boost value of Jun/Jul/Aug</span>
+              </div>
+            </div>
+            <div class="form-group custom-holidays-group">
+              <label>Pinned Dates <span class="label-hint">(must-take PTO)</span></label>
+              <div class="custom-holidays-input">
+                <input type="date" id="pinned-date-input" class="date-input">
+                <button type="button" id="add-pinned-btn" class="btn btn-secondary btn-sm">Add</button>
+              </div>
+              <div id="pinned-dates-list" class="chip-list"></div>
+            </div>
+            <div class="form-group custom-holidays-group">
+              <label>Blackout Dates <span class="label-hint">(no PTO allowed)</span></label>
+              <div class="custom-holidays-input">
+                <input type="date" id="blackout-date-input" class="date-input">
+                <button type="button" id="add-blackout-btn" class="btn btn-secondary btn-sm">Add</button>
+              </div>
+              <div id="blackout-dates-list" class="chip-list"></div>
+            </div>
+          </div>
+        </details>
+
         <button type="submit" id="optimize-btn" class="btn btn-primary btn-lg">
           <span class="btn-text">Optimize My PTO</span>
           <span class="btn-spinner" hidden></span>

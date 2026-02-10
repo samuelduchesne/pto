@@ -89,6 +89,39 @@ def optimize(
         "-s",
         help="Strategy to run: all, bridges, longest, weekends, quarterly.",
     ),
+    pin: list[str] | None = typer.Option(  # noqa: B008
+        None,
+        "--pin",
+        help="Pin a date as must-take PTO (YYYY-MM-DD). Repeatable.",
+    ),
+    blackout: list[str] | None = typer.Option(  # noqa: B008
+        None,
+        "--blackout",
+        help="Blackout date where PTO cannot be used (YYYY-MM-DD). Repeatable.",
+    ),
+    max_block: int | None = typer.Option(
+        None,
+        "--max-block-days",
+        help="Soft cap on vacation block length (days). Diminishing returns past this length.",
+        min=1,
+    ),
+    min_gap: int = typer.Option(
+        0,
+        "--min-gap-days",
+        help="Minimum workdays between vacation blocks.",
+        min=0,
+    ),
+    monthly_cap: int | None = typer.Option(
+        None,
+        "--monthly-cap",
+        help="Maximum PTO days per calendar month.",
+        min=1,
+    ),
+    prefer_summer: bool = typer.Option(
+        False,
+        "--prefer-summer",
+        help="Apply seasonal weights that favour Jun-Aug.",
+    ),
     calendar: bool = typer.Option(
         True,
         "--calendar/--no-calendar",
@@ -151,12 +184,27 @@ def optimize(
     # Deduplicate and sort
     holidays = sorted(set(holidays))
 
+    # Parse heuristic dates
+    pinned_dates = [_parse_date(d) for d in pin] if pin else []
+    blackout_dates = [_parse_date(d) for d in blackout] if blackout else []
+
+    # Seasonal weights
+    seasonal_weights: dict[int, float] | None = None
+    if prefer_summer:
+        seasonal_weights = {6: 1.5, 7: 1.5, 8: 1.5}
+
     # Build optimizer
     optimizer = PTOOptimizer(
         year=resolved_year,
         pto_budget=budget,
         holidays=holidays,
         floating_holidays=floating,
+        pinned_dates=pinned_dates,
+        blackout_dates=blackout_dates,
+        max_block_days=max_block,
+        min_gap_days=min_gap,
+        monthly_pto_cap=monthly_cap,
+        seasonal_weights=seasonal_weights,
     )
 
     # Run strategies
