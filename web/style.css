@@ -192,6 +192,51 @@ body {
   color: var(--c-text);
 }
 
+/* --- Mode toggle --------------------------------------------------- */
+.mode-toggle-group {
+  margin-bottom: var(--sp-6);
+}
+
+.mode-toggle-label {
+  display: block;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--c-text);
+  margin-bottom: var(--sp-2);
+}
+
+.mode-toggle {
+  display: inline-flex;
+  background: var(--c-bg);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 3px;
+  gap: 2px;
+}
+
+.mode-btn {
+  padding: var(--sp-2) var(--sp-5);
+  font-family: var(--font);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--c-text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: calc(var(--r-md) - 2px);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+}
+
+.mode-btn:hover {
+  color: var(--c-text);
+}
+
+.mode-btn.active {
+  background: var(--c-surface);
+  color: var(--c-primary);
+  box-shadow: var(--shadow-sm);
+}
+
 /* --- Config section ------------------------------------------------ */
 .config-section {
   margin-top: var(--sp-8);
@@ -303,6 +348,156 @@ body {
 
 .chip-remove:hover {
   background: rgba(13, 148, 136, 0.15);
+}
+
+/* --- Group settings ------------------------------------------------ */
+.group-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-4);
+}
+
+.group-hint {
+  font-size: var(--text-sm);
+  color: var(--c-text-secondary);
+  line-height: 1.5;
+  flex: 1;
+}
+
+.groups-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-6);
+}
+
+.group-card {
+  background: var(--c-bg);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+
+.group-card-header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--c-surface);
+  border-bottom: 1px solid var(--c-border);
+}
+
+.group-name-input {
+  flex: 1;
+  border: 1px solid transparent;
+  background: transparent;
+  font-family: var(--font);
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--c-text);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-sm);
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.group-name-input:hover {
+  border-color: var(--c-border);
+  background: var(--c-bg);
+}
+
+.group-name-input:focus {
+  outline: none;
+  border-color: var(--c-primary);
+  background: var(--c-surface);
+  box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.12);
+}
+
+.group-remove-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: var(--c-text-muted);
+  font-size: var(--text-xl);
+  cursor: pointer;
+  border-radius: var(--r-sm);
+  transition: background 0.15s, color 0.15s;
+  flex-shrink: 0;
+}
+
+.group-remove-btn:hover {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--c-danger);
+}
+
+.group-card-body {
+  padding: var(--sp-4);
+}
+
+.group-fields {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+
+.group-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.group-field label {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--c-text-secondary);
+}
+
+.group-field input[type="number"],
+.group-field select {
+  height: 36px;
+  padding: 0 var(--sp-2);
+  font-size: var(--text-sm);
+  font-family: var(--font);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  background: var(--c-surface);
+  color: var(--c-text);
+  transition: border-color 0.15s;
+}
+
+.group-field input:focus,
+.group-field select:focus {
+  outline: none;
+  border-color: var(--c-primary);
+  box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.12);
+}
+
+.group-custom-holidays {
+  margin-top: var(--sp-2);
+}
+
+.group-custom-holidays .custom-holidays-input {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+.group-custom-holidays .date-input {
+  height: 36px;
+  padding: 0 var(--sp-2);
+  font-size: var(--text-sm);
+  font-family: var(--font);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  background: var(--c-surface);
+  color: var(--c-text);
+  flex: 1;
+  max-width: 180px;
 }
 
 /* Strategy cards */
@@ -439,6 +634,27 @@ body {
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(12px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+.results-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--sp-4);
+}
+
+.results-title {
+  font-size: var(--text-xl);
+  font-weight: 700;
+}
+
+#export-pdf-btn {
+  gap: var(--sp-2);
+  white-space: nowrap;
+}
+
+#export-pdf-btn svg {
+  flex-shrink: 0;
 }
 
 .results-summary {
@@ -589,6 +805,54 @@ body {
 .dot-holiday { background: var(--c-holiday); }
 .dot-weekend { background: var(--c-weekend); }
 .dot-floating { background: var(--c-floating); }
+
+/* --- Group allocations --------------------------------------------- */
+.group-allocations {
+  margin-bottom: var(--sp-8);
+}
+
+.group-allocations h4 {
+  font-size: var(--text-lg);
+  font-weight: 700;
+  margin-bottom: var(--sp-4);
+}
+
+.allocation-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: var(--sp-4) var(--sp-5);
+  margin-bottom: var(--sp-3);
+  box-shadow: var(--shadow-sm);
+}
+
+.allocation-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--sp-2);
+}
+
+.allocation-usage {
+  font-size: var(--text-sm);
+  color: var(--c-text-secondary);
+}
+
+.allocation-dates {
+  font-size: var(--text-sm);
+  color: var(--c-text-secondary);
+  margin-top: var(--sp-1);
+}
+
+.allocation-label {
+  font-weight: 600;
+  color: var(--c-text);
+  margin-right: var(--sp-1);
+}
+
+.allocation-date {
+  color: var(--c-text-secondary);
+}
 
 /* Calendar view */
 .calendar-section {
@@ -769,6 +1033,29 @@ body {
 
   .results-summary {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .group-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .mode-toggle {
+    width: 100%;
+  }
+
+  .mode-btn {
+    flex: 1;
+    text-align: center;
+  }
+
+  .group-header {
+    flex-direction: column;
+  }
+
+  .results-header-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--sp-3);
   }
 }
 

@@ -43,35 +43,60 @@
     <!-- Configuration Panel -->
     <section class="config-section">
       <form id="optimizer-form" class="config-form">
-        <div class="form-grid">
+        <!-- Mode toggle -->
+        <div class="mode-toggle-group">
+          <label class="mode-toggle-label">Planning for</label>
+          <div class="mode-toggle">
+            <button type="button" class="mode-btn active" data-mode="solo">Just Me</button>
+            <button type="button" class="mode-btn" data-mode="group">Family / Friends</button>
+          </div>
+        </div>
+
+        <!-- Shared settings: Year + Strategy are always visible -->
+        <div class="form-grid" id="shared-settings">
           <div class="form-group">
             <label for="year">Year</label>
             <input type="number" id="year" min="2024" max="2030" required>
           </div>
-          <div class="form-group">
-            <label for="budget">PTO Days</label>
-            <input type="number" id="budget" min="0" max="60" value="15" required>
+        </div>
+
+        <!-- Solo mode settings -->
+        <div id="solo-settings">
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="budget">PTO Days</label>
+              <input type="number" id="budget" min="0" max="60" value="15" required>
+            </div>
+            <div class="form-group">
+              <label for="floating">Floating Holidays</label>
+              <input type="number" id="floating" min="0" max="20" value="0">
+            </div>
+            <div class="form-group">
+              <label for="country">Holiday Preset</label>
+              <select id="country">
+                <option value="us" selected>United States</option>
+                <option value="none">None</option>
+              </select>
+            </div>
           </div>
-          <div class="form-group">
-            <label for="floating">Floating Holidays</label>
-            <input type="number" id="floating" min="0" max="20" value="0">
-          </div>
-          <div class="form-group">
-            <label for="country">Holiday Preset</label>
-            <select id="country">
-              <option value="us" selected>United States</option>
-              <option value="none">None</option>
-            </select>
+
+          <div class="form-group custom-holidays-group">
+            <label>Custom Holidays <span class="label-hint">(optional)</span></label>
+            <div class="custom-holidays-input">
+              <input type="date" id="custom-holiday-input" class="date-input">
+              <button type="button" id="add-holiday-btn" class="btn btn-secondary btn-sm">Add</button>
+            </div>
+            <div id="custom-holidays-list" class="chip-list"></div>
           </div>
         </div>
 
-        <div class="form-group custom-holidays-group">
-          <label>Custom Holidays <span class="label-hint">(optional)</span></label>
-          <div class="custom-holidays-input">
-            <input type="date" id="custom-holiday-input" class="date-input">
-            <button type="button" id="add-holiday-btn" class="btn btn-secondary btn-sm">Add</button>
+        <!-- Group mode settings -->
+        <div id="group-settings" hidden>
+          <div class="group-header">
+            <p class="group-hint">Add each person or household member. The optimizer will find the best shared vacation days when everyone is off together.</p>
+            <button type="button" id="add-group-btn" class="btn btn-secondary btn-sm">+ Add Person</button>
           </div>
-          <div id="custom-holidays-list" class="chip-list"></div>
+          <div id="groups-list" class="groups-list"></div>
         </div>
 
         <div class="form-group">
@@ -119,6 +144,13 @@
 
     <!-- Results Section -->
     <section id="results-section" class="results-section" hidden>
+      <div class="results-header-row">
+        <h2 class="results-title">Results</h2>
+        <button type="button" id="export-pdf-btn" class="btn btn-secondary btn-sm" hidden>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 10v3a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-3"/><polyline points="4.5 6.5 8 10 11.5 6.5"/><line x1="8" y1="10" x2="8" y2="2"/></svg>
+          Export PDF
+        </button>
+      </div>
       <div id="results-summary" class="results-summary"></div>
 
       <!-- Plan tabs -->
@@ -142,6 +174,7 @@
   </footer>
 
   <script src="https://cdn.jsdelivr.net/pyodide/v0.27.5/full/pyodide.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.2/jspdf.umd.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
