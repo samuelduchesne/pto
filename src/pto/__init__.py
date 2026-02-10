@@ -4,6 +4,7 @@ Maximize your time off by strategically placing PTO days to bridge
 weekends and holidays into longer vacation blocks.
 """
 
+from pto.holidays import get_holidays, us_holidays
 from pto.optimizer import Plan, PTOOptimizer, VacationBlock
 
-__all__ = ["PTOOptimizer", "Plan", "VacationBlock"]
+__all__ = ["PTOOptimizer", "Plan", "VacationBlock", "get_holidays", "us_holidays"]

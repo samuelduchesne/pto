@@ -5,6 +5,7 @@ description = "PTO vacation optimizer that maximizes time off by bridging weeken
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
+dependencies = ["typer>=0.9"]
 authors = [{ name = "Samuel Letellier-Duchesne", email = "samuelduchesne@me.com" }]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -19,7 +20,7 @@ classifiers = [
 ]
 
 [project.scripts]
-pto = "pto.optimizer:main"
+pto = "pto.cli:main"
 
 [build-system]
 requires = ["hatchling"]
